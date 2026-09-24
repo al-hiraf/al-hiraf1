@@ -80,7 +80,7 @@ service cloud.firestore {
       allow read: if true;
       allow write: if canAny(['settings.write']) && audited()
         && incoming().about is string && incoming().about.size() <= 1500
-        && incoming().services is list && incoming().services.size() <= 12
+        && incoming().services is list && incoming().services.size() <= 16
         && incoming().projects is list && incoming().projects.size() <= 12;
     }
     match /settings/ai {
@@ -254,6 +254,32 @@ service cloud.firestore {
         || (existing().status == 'posted' && incoming().status == 'paid'
             && changedOnly(['status', 'paidBy', 'paidAt', 'payAccountId', 'journalIds', 'auditId', 'updatedAt', 'updatedBy']))
       );
+      allow delete: if false;
+    }
+
+    // ---------- صور الصفحة التعريفية: عامة القراءة، ولا تُكتب إلا صورة JPEG/WebP مضغوطة ----------
+    match /publicMedia/{id} {
+      allow read: if true;
+      allow create, update: if canAny(['settings.write']) && audited()
+        && incoming().data is string && incoming().data.size() < 450000
+        && incoming().data.matches('data:image/(jpeg|webp);base64,[A-Za-z0-9+/=]+');
+      allow delete: if false;
+    }
+
+    // ---------- طلبات عروض الأسعار من الصفحة التعريفية ----------
+    // أي زائر يستطيع إرسال طلب واحد بحقول محددة وأحجام محدودة، ولا يستطيع قراءة الطلبات
+    match /leads/{id} {
+      allow create: if incoming().keys().hasOnly(['name', 'phone', 'city', 'service', 'message', 'status', 'at'])
+        && incoming().status == 'new' && incoming().at == request.time
+        && incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 80
+        && incoming().phone is string && incoming().phone.matches('^[+]?[0-9]{9,14}$')
+        && incoming().city is string && incoming().city.size() <= 40
+        && incoming().service is string && incoming().service.size() <= 80
+        && incoming().message is string && incoming().message.size() <= 800;
+      allow read: if canAny(['customer.write', 'audit.view']);
+      allow update: if canAny(['customer.write']) && audited()
+        && incoming().status in ['new', 'contacted', 'won', 'lost']
+        && changedOnly(['status', 'note', 'customerId', 'handledBy', 'handledAt', 'auditId', 'updatedAt', 'updatedBy']);
       allow delete: if false;
     }
 

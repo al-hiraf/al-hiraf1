@@ -132,7 +132,9 @@ const pill = (map, key) => { const [l, c] = map[key] || [key, 'neutral']; return
 const MAX_GOODS_LINES = 6; // حد أصناف المخزون في المستند الواحد (حدود قواعد Firestore)
 
 const SERVER_TIME = '__SERVER_TIME__';
-const COLLS = ['accounts', 'customers', 'items', 'stockMoves', 'purchases', 'invoices', 'payments', 'journals', 'assets', 'depRuns', 'users', 'settings', 'audit', 'employees', 'advances', 'payrolls'];
+const COLLS = ['accounts', 'customers', 'items', 'stockMoves', 'purchases', 'invoices', 'payments', 'journals', 'assets', 'depRuns', 'users', 'settings', 'audit', 'employees', 'advances', 'payrolls', 'leads', 'publicMedia'];
+const NO_SUB = new Set(['publicMedia']); // صور الصفحة التعريفية تُجلب عند الحاجة فقط
+const canLeads = () => can('customer.write') || can('audit.view');
 const HR_COLLS = new Set(['employees', 'advances', 'payrolls']); // تُقرأ فقط لمن يملك صلاحية الموارد البشرية أو المراجعة
 const canHR = () => can('hr.manage') || can('payroll.run') || can('audit.view');
 
@@ -162,6 +164,7 @@ const CloudDB = {
     return this.aiMod.getGenerativeModel(this.ai, { model: S.data.aiModel || AI_MODEL, systemInstruction,
       generationConfig: json ? { responseMimeType: 'application/json', temperature: 0.1 } : { temperature: 0.4, maxOutputTokens: 2048 } });
   },
+  async fetch(c, id) { const s = await this.fb.getDoc(this.fb.doc(this.db, c, id)); return s.exists() ? this.norm(s.data()) : null; },
   authUsername() { const u = this.auth.currentUser; return u && u.email ? u.email.split('@')[0] : null; },
   onAuth(cb) { this.fb.onAuthStateChanged(this.auth, () => cb(this.authUsername())); },
 
@@ -217,11 +220,11 @@ const CloudDB = {
     return out;
   },
 
-  subscribe(onData, onChange, { withAudit, withHR }) {
+  subscribe(onData, onChange, { withAudit, withHR, withLeads }) {
     const { collection, onSnapshot, query, orderBy, limit } = this.fb;
     const st = Object.fromEntries(COLLS.map((c) => [c, {}]));
     const ready = new Set();
-    const wanted = COLLS.filter((c) => (c !== 'audit' || withAudit) && (!HR_COLLS.has(c) || withHR));
+    const wanted = COLLS.filter((c) => !NO_SUB.has(c) && (c !== 'audit' || withAudit) && (!HR_COLLS.has(c) || withHR) && (c !== 'leads' || withLeads));
     wanted.forEach((c) => {
       const ref = c === 'audit' ? query(collection(this.db, 'audit'), orderBy('at', 'desc'), limit(1000)) : collection(this.db, c);
       this.unsubs.push(onSnapshot(ref, (snap) => {
@@ -286,6 +289,7 @@ const LocalDB = {
   },
   subscribe(onData) { this.cb = onData; onData(structuredClone(this.state)); },
   async aiModel() { throw new H.InputError('المساعد الذكي يعمل بعد ربط البرنامج بـ Firebase وتفعيل AI Logic'); },
+  async fetch(c, id) { const v = this.state[c]?.[id]; return v ? structuredClone(v) : null; },
   stop() { this.cb = null; },
   /** نفس قيود Firestore: لا قراءة بعد أول كتابة، والكتابة ذرّية (كلها أو لا شيء) */
   async tx(fn) {
@@ -325,7 +329,7 @@ function fbError(e) {
    الحالة العامة
    ===================================================================== */
 function emptyData() {
-  return { accounts: [], customers: [], items: [], stockMoves: [], purchases: [], catalog: [], employees: [], advances: [], payrolls: [], hr: { ...H.GOSI_DEFAULT }, invoices: [], payments: [], journals: [], assets: [], depRuns: [], users: [], audit: [], company: {}, counters: {}, accBal: new Map(), alerts: [], recon: {} };
+  return { accounts: [], customers: [], items: [], stockMoves: [], purchases: [], catalog: [], leads: [], employees: [], advances: [], payrolls: [], hr: { ...H.GOSI_DEFAULT }, invoices: [], payments: [], journals: [], assets: [], depRuns: [], users: [], audit: [], company: {}, counters: {}, accBal: new Map(), alerts: [], recon: {} };
 }
 const S = {
   db: null,
@@ -1107,12 +1111,51 @@ const Services = {
     if (phone && !/^\+?\d{9,14}$/.test(phone)) throw new H.InputError('رقم التواصل غير صالح');
     if (whatsapp && !/^\d{9,14}$/.test(whatsapp)) throw new H.InputError('رقم الواتساب بالصيغة الدولية بدون + (مثال: 9665XXXXXXXX)');
     const list = (t, max, len) => String(t || '').split('\n').map((x) => H.cleanText(x, len)).filter(Boolean).slice(0, max);
-    const doc = { published: !!v.published, tagline: H.cleanText(v.tagline, 120), city: H.cleanText(v.city, 40), about: String(v.about || '').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim().slice(0, 1500),
-      services: list(v.services, 12, 80),
-      projects: list(v.projects, 12, 160).map((l) => { const [name, ...rest] = l.split(/\s+[—–-]\s+/); return { name: H.cleanText(name, 80), detail: H.cleanText(rest.join(' — '), 120) }; }),
-      phone, whatsapp, email, mapUrl: url, address: H.cleanText(v.address, 200),
-      companyName: c.name || 'الحرف المتكاملة للمقاولات', cr: c.cr || '', vat: c.vat || '' };
+    const stats = (v.stats || []).map((x) => ({ n: H.cleanText(x.n, 10), label: H.cleanText(x.label, 30) })).filter((x) => x.n && x.label).slice(0, 4);
+    const projects = (v.projects || []).map((x) => ({ key: String(x.key || '').replace(/[^a-z0-9]/gi, '').slice(0, 16), name: H.cleanText(x.name, 80), place: H.cleanText(x.place, 60),
+      year: H.normalizeDigits(H.cleanText(x.year, 10)), detail: H.cleanText(x.detail, 200), media: !!x.media, client: H.cleanText(x.client, 80),
+      value: H.normalizeDigits(H.cleanText(x.value, 16)).replace(/[^\d.]/g, ''), scope: H.cleanText(x.scope, 100), status: ['done', 'running'].includes(x.status) ? x.status : '' })).filter((x) => x.name && x.key).slice(0, 12);
+    const mlist = (arr, f, max) => (arr || []).map((x) => ({ key: String(x.key || '').replace(/[^a-z0-9]/gi, '').slice(0, 16), [f]: H.cleanText(x[f], 90) })).filter((x) => x.key).slice(0, max);
+    if (!H.cleanText(v.tagline, 120)) throw new H.InputError('اكتب العبارة الرئيسية');
+    const doc = { published: !!v.published, leadForm: v.leadForm !== false, tagline: H.cleanText(v.tagline, 120), lead: H.cleanText(v.lead, 240), city: H.cleanText(v.city, 40),
+      classification: H.cleanText(v.classification, 100), about: String(v.about || '').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim().slice(0, 1500),
+      values: list(v.values, 6, 90), services: list(v.services, 16, 80), process: list(v.process, 6, 50), stats, projects, heroMedia: !!v.heroMedia,
+      vision: H.cleanText(v.vision, 500), mission: H.cleanText(v.mission, 500), message: String(v.message || '').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim().slice(0, 900), messageBy: H.cleanText(v.messageBy, 80),
+      gallery: mlist(v.gallery, 'caption', 16), certs: mlist(v.certs, 'title', 12), partners: mlist(v.partners, 'name', 16),
+      phone, whatsapp, email, mapUrl: url, address: H.cleanText(v.address, 200), companyName: c.name || 'الحرف المتكاملة للمقاولات', cr: c.cr || '', vat: c.vat || '' };
     await S.db.tx(async (t) => { const meta = audit(t, 'update', 'settings', 'public', `تحديث الصفحة التعريفية (${doc.published ? 'منشورة' : 'غير منشورة'})`); t.set('settings', 'public', { ...doc, ...meta }); });
+  },
+  /** صورة للصفحة التعريفية (مضغوطة في المتصفح قبل الرفع) */
+  async savePublicMedia(id, dataUrl) {
+    need('settings.write');
+    if (!/^(hero|[pgcl]-[a-z0-9]{4,16})$/i.test(id)) throw new H.InputError('معرّف صورة غير صالح');
+    if (!/^data:image\/(jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl) || dataUrl.length >= 450000) throw new H.InputError('الصورة كبيرة جداً');
+    await S.db.tx(async (t) => { const meta = audit(t, 'update', 'settings', 'media', `رفع صورة للصفحة التعريفية (${Math.round(dataUrl.length / 1024)} ك.ب)`); t.set('publicMedia', id, { data: dataUrl, ...meta }); });
+  },
+  async updateLead(id, patch) {
+    need('customer.write');
+    const status = patch.status;
+    if (!['new', 'contacted', 'won', 'lost'].includes(status)) throw new H.InputError('حالة غير صالحة');
+    await S.db.tx(async (t) => {
+      const cur = await t.get('leads', id); if (!cur) throw new H.InputError('الطلب غير موجود');
+      const meta = audit(t, 'update', 'lead', id, `طلب ${cur.name}: ${LEAD_STATUS[status][0]}`);
+      t.update('leads', id, { status, note: H.cleanText(patch.note ?? cur.note ?? '', 300), handledBy: S.user.username, handledAt: nowISO(), ...meta });
+    });
+  },
+  /** تحويل الطلب إلى عميل في النظام (بنفس المعاملة) */
+  async convertLead(id) {
+    need('customer.write');
+    return S.db.tx(async (t) => {
+      const cur = await t.get('leads', id); if (!cur) throw new H.InputError('الطلب غير موجود');
+      if (cur.customerId) throw new H.InputError('حُوّل هذا الطلب إلى عميل من قبل');
+      const cid = t.newId('customers');
+      const name = H.cleanText(cur.name, 120);
+      const meta = audit(t, 'create', 'customer', cid, `إضافة العميل ${name} من طلب عرض سعر`);
+      t.set('customers', cid, { name, company: '', vatNo: '', phone: H.normalizeDigits(cur.phone || ''), email: '', city: H.cleanText(cur.city, 60),
+        notes: H.cleanText([cur.service, cur.message].filter(Boolean).join(' — '), 500), archived: false, createdBy: S.user.username, createdAt: nowISO(), ...meta });
+      t.update('leads', id, { status: 'won', customerId: cid, handledBy: S.user.username, handledAt: nowISO(), ...meta });
+      return name;
+    });
   },
   /* ---------- الأصول الثابتة والإهلاك ---------- */
   async createAsset(f) {
@@ -1237,8 +1280,9 @@ function derive(st) {
     advSubH: H.sumInts(advances.map((a) => a.remainingH)), advGlH: accBal.get(ACC.advances) || 0,
   };
   const catalog = purchaseCatalog(purchases);
+  const leads = arr('leads').sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
   return {
-    accounts, journals, customers, items, stockMoves, purchases, catalog, employees, advances, payrolls, hr: { ...H.GOSI_DEFAULT, ...hrSet }, aiModel: (st.settings || {}).ai?.model || '', publicPage: (st.settings || {}).public || null, invoices, payments, assets, depRuns, users, audit: auditLog,
+    accounts, journals, customers, items, stockMoves, purchases, catalog, employees, advances, payrolls, leads, hr: { ...H.GOSI_DEFAULT, ...hrSet }, aiModel: (st.settings || {}).ai?.model || '', publicPage: (st.settings || {}).public || null, invoices, payments, assets, depRuns, users, audit: auditLog,
     company: (st.settings || {}).company || {}, counters: (st.settings || {}).counters || {}, accBal, alerts, recon,
   };
 }
@@ -1348,8 +1392,8 @@ function enterApp() {
 }
 function startSync() {
   S.db.stop();
-  S.auditSub = can('audit.view'); S.hrSub = canHR();
-  S.db.subscribe(onData, onRemoteChange, { withAudit: S.auditSub, withHR: S.hrSub });
+  S.auditSub = can('audit.view'); S.hrSub = canHR(); S.leadsSub = canLeads();
+  S.db.subscribe(onData, onRemoteChange, { withAudit: S.auditSub, withHR: S.hrSub, withLeads: S.leadsSub });
 }
 function updateMe() {
   $('#meName').textContent = S.user.name;
@@ -1377,7 +1421,7 @@ function onData(raw) {
   if (!me || me.active === false || me.deleted) { toast('تم إيقاف حسابك', 'راجع مدير النظام', 'error'); logout(); return; }
   Object.assign(S.user, { name: me.name, role: me.role, perms: me.perms || [], active: me.active });
   updateMe();
-  if (can('audit.view') !== S.auditSub || canHR() !== S.hrSub) { startSync(); return; }
+  if (can('audit.view') !== S.auditSub || canHR() !== S.hrSub || canLeads() !== S.leadsSub) { startSync(); return; }
   S.loaded = true;
   ensureNewAccounts();
   $('#companyName').textContent = S.data.company.name || 'للمقاولات';
@@ -1416,6 +1460,7 @@ const LIVE_NOTES = {
   assets: (d) => `سجّل الأصل ${d.name || ''}`,
 };
 function onRemoteChange(coll, type, doc) {
+  if (type === 'added' && coll === 'leads' && doc.status === 'new') { toast('طلب عرض سعر جديد', `${doc.name || ''} — ${doc.service || 'من الصفحة التعريفية'}`); return; }
   if (type !== 'added' || !LIVE_NOTES[coll] || !doc.createdBy || doc.createdBy === S.user?.username) return;
   const text = LIVE_NOTES[coll](doc);
   if (text) toast(userName(doc.createdBy), text);
@@ -1429,6 +1474,7 @@ const SECTIONS = {
   ai: { title: 'المساعد الذكي', icon: 'spark', sub: 'اسأل عن أرقامك: المصروفات، التحصيل، النقدية، الرواتب', render: renderAI, perm: 'ai.use' },
   invoices: { title: 'الفواتير', icon: 'file', group: 'المبيعات', sub: 'فواتير ضريبية بضريبة القيمة المضافة 15%', render: renderInvoices },
   customers: { title: 'العملاء', icon: 'users', group: 'المبيعات', sub: 'بيانات العملاء وأرصدتهم', render: renderCustomers },
+  leads: { title: 'طلبات العملاء', icon: 'inbox', group: 'المبيعات', sub: 'طلبات عروض الأسعار الواردة من الصفحة التعريفية', render: renderLeads, perm: ['customer.write', 'audit.view'] },
   payments: { title: 'سندات القبض', icon: 'wallet', group: 'المبيعات', sub: 'المبالغ المحصّلة من العملاء', render: renderPayments },
   inventory: { title: 'المشتريات والمصروفات', icon: 'box', group: 'المشتريات والأصول', sub: 'سجّل فاتورة المورد فقط — الأصناف تُحفظ تلقائياً', render: renderInventory },
   assets: { title: 'الأصول الثابتة', icon: 'building', group: 'المشتريات والأصول', sub: 'الإهلاك بطريقة القسط الثابت', render: renderAssets },
@@ -1439,6 +1485,7 @@ const SECTIONS = {
   hr: { title: 'الموارد البشرية', icon: 'id', group: 'الموارد البشرية', sub: 'الموظفون والرواتب والسلف ونهاية الخدمة', render: renderHR, perm: ['hr.manage', 'payroll.run', 'audit.view'] },
   audit: { title: 'سجل المراجعة', icon: 'shield', group: 'الإدارة', sub: 'كل عملية: من، ماذا، ومتى', render: renderAudit, perm: 'audit.view' },
   users: { title: 'المستخدمون والصلاحيات', icon: 'key', group: 'الإدارة', sub: 'إضافة وإيقاف وحذف المستخدمين وتحديد صلاحياتهم', render: renderUsers, perm: 'users.manage' },
+  site: { title: 'الصفحة التعريفية', icon: 'globe', group: 'الإدارة', sub: 'واجهة الشركة للعملاء: الخدمات والمشاريع والصور وطلب عرض السعر', render: renderSite, perm: 'settings.write' },
   settings: { title: 'الإعدادات', icon: 'sliders', group: 'الإدارة', sub: 'بيانات المنشأة وحسابي', render: renderSettings },
 };
 const visible = (key) => { const p = SECTIONS[key].perm; return !p || (Array.isArray(p) ? p.some((x) => can(x)) : can(p)); };
@@ -1446,7 +1493,7 @@ const visible = (key) => { const p = SECTIONS[key].perm; return !p || (Array.isA
 function renderNav() {
   const overdue = S.data.invoices.filter((i) => i.state.key === 'overdue').length;
   const drafts = S.data.journals.filter((j) => j.status === 'draft' && j.createdBy !== S.user.username).length;
-  const badges = { invoices: overdue, journal: can('journal.post') ? drafts : 0 };
+  const badges = { invoices: overdue, journal: can('journal.post') ? drafts : 0, leads: S.data.leads.filter((l) => l.status === 'new').length };
   const groups = [];
   for (const [key, s] of Object.entries(SECTIONS)) {
     if (!visible(key)) continue;
@@ -2185,6 +2232,179 @@ async function bankAIClassify(el) {
 }
 
 /* =====================================================================
+   الصفحة التعريفية: المحرر
+   ===================================================================== */
+const SITE_DRAFT = {
+  tagline: 'من الأساس حتى التسليم، حِرفٌ متكاملة تحت إدارة واحدة',
+  lead: 'أعمال المقاولات العامة والتشطيبات والصيانة للمنازل والمنشآت التجارية.',
+  about: 'الحرف المتكاملة للمقاولات منشأة سعودية تنفّذ أعمال المقاولات العامة والتشطيبات والصيانة، وتجمع الحِرف الفنية التي يحتاجها المشروع تحت إدارة واحدة: من الهيكل الخرساني إلى الكهرباء والسباكة والنجارة والدهانات.\nنلتزم بالمواصفات المعتمدة وبجدول زمني واضح، ونُطلع العميل على سير العمل في كل مرحلة حتى التسليم.',
+  values: ['الالتزام بالجدول الزمني المتفق عليه', 'التنفيذ وفق المواصفات والمخططات المعتمدة', 'وضوح التكلفة قبل البدء وأثناء التنفيذ', 'السلامة في الموقع لفريقنا ولجيران المشروع'],
+  services: ['المقاولات العامة (أعمال العظم والخرسانة)', 'التشطيبات الداخلية والخارجية', 'أعمال الكهرباء والإنارة', 'أعمال السباكة وشبكات المياه', 'النجارة والأبواب والمطابخ', 'الدهانات والديكور والجبس', 'العزل المائي والحراري', 'الترميم والصيانة'],
+  process: ['التواصل والمعاينة', 'الدراسة وعرض السعر', 'التعاقد والجدول الزمني', 'التنفيذ والمتابعة', 'التسليم'],
+  stats: [], projects: [], leadForm: true, published: false,
+};
+const newKey = () => Math.random().toString(36).slice(2, 10);
+/** قوائم الصور: [بادئة المعرّف، العنوان، اسم حقل النص، تلميح النص، الحد الأقصى، أقصى عرض للصورة] */
+const MEDIA_KINDS = { gallery: ['g', 'معرض الأعمال (صور من المواقع)', 'caption', 'وصف قصير (اختياري)', 16, 1600], certs: ['c', 'الشهادات والاعتمادات', 'title', 'اسم الشهادة', 12, 1400], partners: ['l', 'شركاء النجاح والعملاء (شعارات)', 'name', 'اسم الجهة', 16, 600] };
+function siteState() {
+  if (!S.site) {
+    const p = S.data.publicPage;
+    const src = p || SITE_DRAFT;
+    S.site = { draft: !p, projects: (src.projects || []).map((x) => ({ ...x })), stats: [0, 1, 2, 3].map((i) => ({ ...(src.stats?.[i] || { n: '', label: '' }) })), heroMedia: !!src.heroMedia,
+      lists: Object.fromEntries(Object.entries(MEDIA_KINDS).map(([k, [, , f]]) => [k, (src[k] || []).map((x) => ({ key: x.key, text: x[f] || '' }))])), pending: {}, thumbs: {}, loading: new Set() };
+  }
+  return S.site;
+}
+/** يحمّل الصور المصغرة الموجودة مرة واحدة */
+function siteLoadThumbs() {
+  const st = siteState();
+  const ids = [...(st.heroMedia ? ['hero'] : []), ...st.projects.filter((x) => x.media).map((x) => 'p-' + x.key),
+    ...Object.entries(st.lists).flatMap(([k, l]) => l.map((x) => MEDIA_KINDS[k][0] + '-' + x.key))];
+  ids.filter((id) => !(id in st.thumbs) && !st.loading.has(id)).forEach((id) => {
+    st.loading.add(id);
+    S.db.fetch('publicMedia', id).then((d) => { st.thumbs[id] = d?.data || null; if (S.section === 'site') render(); }).catch(() => { st.thumbs[id] = null; });
+  });
+}
+function renderSite() {
+  const st = siteState(); siteLoadThumbs();
+  const p = S.data.publicPage || SITE_DRAFT;
+  // ما كتبه المستخدم ولم يحفظه بعد يبقى عند إعادة الرسم (إضافة مشروع، رفع صورة…)
+  const src = st.form || (st.draft ? SITE_DRAFT : p);
+  const lines = (a) => (Array.isArray(a) ? a.join('\n') : a || '');
+  const t = (id, label, val, hint = '', rows = 4, max = 1500) => `<div class="field span-2"><label for="${id}">${label}</label><textarea class="textarea" id="${id}" rows="${rows}" maxlength="${max}">${esc(val || '')}</textarea>${hint ? `<span class="cell-sub">${hint}</span>` : ''}</div>`;
+  const i = (id, label, val, attrs = '') => `<div class="field"><label for="${id}">${label}</label><input class="input" id="${id}" value="${esc(val || '')}" ${attrs}></div>`;
+  const img = (id) => st.pending[id] || st.thumbs[id];
+  const photo = (id, label) => `<div class="site-photo">${img(id) ? `<img src="${esc(img(id))}" alt="">` : `<span class="ph-empty">${icon('upload')}</span>`}
+    <label class="btn btn-ghost btn-sm">${icon('upload')}${img(id) ? 'تغيير' : label}<input type="file" accept="image/*" class="sr" data-photo="${esc(id)}"></label>${st.pending[id] ? '<span class="pill warn">لم تُحفظ</span>' : ''}</div>`;
+  return `<form id="publicForm" data-keep novalidate>
+    ${st.draft ? `<div class="card draft-note">${icon('alert')}<div><b>مسودة مقترحة</b><span>كتبنا لك محتوى أولياً عاماً. احذف أي خدمة لا تقدمونها، وأضف مشاريعكم الحقيقية وصورها وأرقامكم، ثم احفظ وانشر. لا تضع أرقاماً أو مشاريع غير حقيقية.</span></div></div>` : ''}
+    <div class="site-bar card"><div>${S.data.publicPage?.published ? '<span class="pill ok">منشورة للعامة</span>' : '<span class="pill neutral">غير منشورة</span>'}</div>
+      <div class="actions"><a class="btn btn-ghost btn-sm" href="about.html?preview" target="_blank" rel="noopener">${icon('eye')}معاينة</a>${S.data.publicPage?.published ? `<a class="btn btn-ghost btn-sm" href="about.html" target="_blank" rel="noopener">${icon('globe')}فتح الصفحة</a>` : ''}
+      ${btn('ai-draft-page', 'صياغة بالذكاء الاصطناعي', { cls: 'btn-ghost btn-sm', ic: 'spark', perm: 'ai.use' })}<button class="btn btn-primary btn-sm" type="submit">${icon('save')}حفظ</button></div></div>
+    <div class="grid-even site-grid">
+      <div class="card"><div class="card-head"><h3>الواجهة</h3><span class="hint">أول ما يراه الزائر</span></div><div class="card-body form-grid">
+        <div class="span-2">${i('pgTag', 'العبارة الرئيسية *', src.tagline, 'maxlength="120"')}<span class="cell-sub">الجزء بعد آخر فاصلة «،» يظهر باللون البرتقالي.</span></div>
+        <div class="span-2">${i('pgLead', 'سطر تعريفي قصير', src.lead, 'maxlength="240"')}</div>
+        ${i('pgCity', 'المدينة', src.city, 'maxlength="40" placeholder="الرياض"')}
+        ${i('pgClass', 'التصنيف / الاعتمادات', src.classification, 'maxlength="100" placeholder="مثال: مصنّفة في مجال المباني — الدرجة الخامسة"')}
+        <div class="field span-2"><label>صورة الواجهة (اختيارية — بدونها يظهر مخطط مبنى مرسوم)</label>${photo('hero', 'رفع صورة')}</div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3>أرقام المنشأة</h3><span class="hint">تظهر فقط الأرقام التي تكتبها</span></div><div class="card-body">
+        ${st.stats.map((x, k) => `<div class="stat-row"><input class="input num" id="st-${k}-n" value="${esc(x.n)}" maxlength="10" placeholder="${['15+', '120', '40', '8'][k]}" aria-label="الرقم ${k + 1}"><input class="input" id="st-${k}-label" value="${esc(x.label)}" maxlength="30" placeholder="${['سنة خبرة', 'مشروع منفّذ', 'فنياً ومهندساً', 'مدن نعمل فيها'][k]}" aria-label="الوصف ${k + 1}"></div>`).join('')}
+        <p class="cell-sub">اكتب أرقاماً صحيحة يمكن إثباتها؛ اترك الخانة فارغة إن لم تكن متأكداً.</p></div></div>
+    </div>
+    <div class="card mt"><div class="card-head"><h3>من نحن والخدمات</h3></div><div class="card-body form-grid">
+      ${t('pgAbout', 'نبذة عن الشركة', src.about, 'فقرة أو فقرتان.', 5)}
+      ${t('pgValues', 'لماذا نحن؟ (نقطة في كل سطر، حتى 6)', lines(src.values), '', 4, 600)}
+      ${t('pgServices', 'الخدمات (خدمة في كل سطر، حتى 16)', lines(src.services), 'تُختار الأيقونة تلقائياً من اسم الخدمة (كهرباء، سباكة، نجارة، دهانات…).', 6, 1300)}
+      ${t('pgProcess', 'مراحل العمل (مرحلة في كل سطر، حتى 6)', lines(src.process), '', 4, 320)}
+    </div></div>
+    <div class="card mt"><div class="card-head"><h3>الرؤية والرسالة وكلمة الإدارة</h3><span class="hint">اختيارية — تُخفى إن تُركت فارغة</span></div><div class="card-body form-grid">
+      ${t('pgVision', 'رؤيتنا', src.vision, '', 3, 500)}
+      ${t('pgMission', 'رسالتنا', src.mission, '', 3, 500)}
+      ${t('pgMessage', 'كلمة الإدارة', src.message, '', 4, 900)}
+      ${i('pgMessageBy', 'صاحب الكلمة', src.messageBy, 'maxlength="80" placeholder="المدير العام — الاسم"')}
+    </div></div>
+    <div class="card mt"><div class="card-head"><h3>المشاريع وصورها</h3><span class="hint">حتى 12 مشروعاً — الصور تُضغط تلقائياً قبل الرفع</span>
+      <div class="actions"><button type="button" class="btn btn-ghost btn-sm" data-action="site-add-proj" ${st.projects.length >= 12 ? 'disabled' : ''}>${icon('plus')}مشروع</button></div></div>
+      <div class="card-body site-projects">${st.projects.length ? st.projects.map((x, k) => `<div class="proj-row">
+        ${photo('p-' + x.key, 'صورة المشروع')}
+        <div class="form-grid">
+          ${i(`pj-${k}-name`, 'اسم المشروع *', x.name, `maxlength="80" data-pj="${k}" data-f="name"`)}
+          ${i(`pj-${k}-place`, 'الموقع', x.place, `maxlength="60" data-pj="${k}" data-f="place" placeholder="حي الملقا، الرياض"`)}
+          ${i(`pj-${k}-year`, 'السنة', x.year, `maxlength="10" inputmode="numeric" data-pj="${k}" data-f="year"`)}
+          ${i(`pj-${k}-client`, 'العميل / الجهة', x.client, `maxlength="80" data-pj="${k}" data-f="client"`)}
+          <div class="span-2">${i(`pj-${k}-detail`, 'وصف قصير', x.detail, `maxlength="200" data-pj="${k}" data-f="detail" placeholder="فيلا دورين — عظم وتشطيب كامل"`)}</div>
+          ${i(`pj-${k}-value`, 'قيمة المشروع (ريال، اختياري)', x.value, `maxlength="16" inputmode="numeric" dir="ltr" data-pj="${k}" data-f="value"`)}
+          ${i(`pj-${k}-scope`, 'نطاق عملنا (اختياري)', x.scope, `maxlength="100" data-pj="${k}" data-f="scope" placeholder="الأعمال الكهروميكانيكية"`)}
+          <div class="field"><label for="pj-${k}-status">الحالة</label><select class="select" id="pj-${k}-status" data-pj="${k}" data-f="status"><option value="">—</option><option value="done" ${x.status === 'done' ? 'selected' : ''}>منجز</option><option value="running" ${x.status === 'running' ? 'selected' : ''}>قيد التنفيذ</option></select></div>
+        </div>
+        <button type="button" class="btn btn-quiet icon-btn btn-sm" data-action="site-del-proj" data-k="${k}" aria-label="حذف المشروع">${icon('trash')}</button></div>`).join('')
+        : `<p class="cell-sub">لا توجد مشاريع بعد. المشاريع بصورها الحقيقية أقوى ما في الصفحة.</p>`}</div></div>
+    ${Object.entries(MEDIA_KINDS).map(([kind, [pre, title, , hint, max]]) => { const l = st.lists[kind]; return `<div class="card mt"><div class="card-head"><h3>${title}</h3><span class="hint">${l.length} من ${max}</span>
+      <div class="actions"><label class="btn btn-ghost btn-sm ${l.length >= max ? 'disabled' : ''}">${icon('upload')}إضافة صور<input type="file" accept="image/*" multiple class="sr" data-mlupload="${kind}" ${l.length >= max ? 'disabled' : ''}></label></div></div>
+      <div class="card-body">${l.length ? `<div class="media-grid">${l.map((x, k) => { const id = pre + '-' + x.key, src = img(id); return `<div class="media-tile">
+        <div class="mt-img">${src ? `<img src="${esc(src)}" alt="">` : '<span class="spinner dark"></span>'}${st.pending[id] ? '<span class="pill warn">لم تُحفظ</span>' : ''}</div>
+        <input class="input" id="ml-${kind}-${k}" value="${esc(x.text)}" maxlength="90" placeholder="${esc(hint)}" aria-label="${esc(hint)}">
+        <button type="button" class="btn btn-quiet btn-sm" data-action="site-del-media" data-kind="${kind}" data-k="${k}">${icon('trash')}حذف</button></div>`; }).join('')}</div>`
+        : `<p class="cell-sub">لم تُضف صور بعد. يمكنك اختيار عدة صور مرة واحدة، وتُضغط تلقائياً قبل الرفع.</p>`}</div></div>`; }).join('')}
+    <div class="card mt"><div class="card-head"><h3>التواصل والنشر</h3></div><div class="card-body form-grid">
+      ${i('pgPhone', 'رقم التواصل', src.phone, 'inputmode="tel" maxlength="15" dir="ltr" placeholder="05XXXXXXXX"')}
+      ${i('pgWhats', 'واتساب', src.whatsapp, 'inputmode="tel" maxlength="15" dir="ltr" placeholder="9665XXXXXXXX"')}
+      ${i('pgEmail', 'البريد الإلكتروني', src.email, 'type="email" maxlength="80" dir="ltr"')}
+      ${i('pgMap', 'رابط الموقع على الخريطة', src.mapUrl, 'maxlength="300" dir="ltr" placeholder="https://maps.app.goo.gl/…"')}
+      <div class="span-2">${i('pgAddress', 'العنوان', src.address, 'maxlength="200"')}</div>
+      <label class="check span-2"><input type="checkbox" id="pgLeadForm" ${src.leadForm !== false ? 'checked' : ''}> نموذج «طلب عرض سعر» (تصل الطلبات إلى شاشة «طلبات العملاء»)</label>
+      <label class="check span-2"><input type="checkbox" id="pgPub" ${src.published ? 'checked' : ''}> نشر الصفحة للعامة</label>
+      <p class="cell-sub span-2">يظهر أيضاً اسم المنشأة والسجل التجاري والرقم الضريبي من «الإعدادات ← بيانات المنشأة».</p>
+    </div></div>
+  </form>`;
+}
+/** ضغط صورة في المتصفح إلى JPEG أقل من 420 ك.ب */
+async function compressImage(file, maxWidth = 1600) {
+  if (!file || !/^image\//.test(file.type)) throw new H.InputError('اختر ملف صورة');
+  if (file.size > 25 * 1024 * 1024) throw new H.InputError('الصورة أكبر من 25 ميجابايت');
+  let src;
+  try { src = await createImageBitmap(file); }
+  catch { src = await new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = () => bad(new H.InputError('تعذّرت قراءة الصورة')); im.src = URL.createObjectURL(file); }); }
+  for (const maxW of [maxWidth, 1280, 960, 720, 540].filter((w) => w <= maxWidth)) {
+    const scale = Math.min(1, maxW / src.width);
+    const c = document.createElement('canvas'); c.width = Math.round(src.width * scale); c.height = Math.round(src.height * scale);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(src, 0, 0, c.width, c.height);
+    for (const q of [0.82, 0.72, 0.62, 0.52]) { const url = c.toDataURL('image/jpeg', q); if (url.length < 420000) return url; }
+  }
+  throw new H.InputError('تعذّر ضغط الصورة إلى الحجم المسموح');
+}
+function siteCollect() {
+  const st = siteState();
+  if (!$('#publicForm')) return st.form || {};
+  const v = (id) => $('#' + id)?.value ?? '';
+  st.projects.forEach((x, k) => ['name', 'place', 'year', 'detail', 'client', 'value', 'scope', 'status'].forEach((f) => { const e = $(`#pj-${k}-${f}`); if (e) x[f] = e.value; }));
+  Object.entries(st.lists).forEach(([kind, l]) => l.forEach((x, k) => { const e = $(`#ml-${kind}-${k}`); if (e) x.text = e.value; }));
+  st.stats.forEach((x, k) => { x.n = v(`st-${k}-n`); x.label = v(`st-${k}-label`); });
+  const out = { tagline: v('pgTag'), lead: v('pgLead'), city: v('pgCity'), classification: v('pgClass'), about: v('pgAbout'), values: v('pgValues'), services: v('pgServices'), process: v('pgProcess'),
+    stats: st.stats, projects: st.projects.map((x) => ({ ...x, media: !!(x.media || st.pending['p-' + x.key]) })), heroMedia: !!(st.heroMedia || st.pending.hero),
+    vision: v('pgVision'), mission: v('pgMission'), message: v('pgMessage'), messageBy: v('pgMessageBy'),
+    ...Object.fromEntries(Object.entries(st.lists).map(([kind, l]) => [kind, l.map((x) => ({ key: x.key, [MEDIA_KINDS[kind][2]]: x.text }))])),
+    phone: v('pgPhone'), whatsapp: v('pgWhats'), email: v('pgEmail'), mapUrl: v('pgMap'), address: v('pgAddress'), leadForm: $('#pgLeadForm')?.checked, published: $('#pgPub')?.checked };
+  st.form = out;
+  return out;
+}
+async function siteSave(el) {
+  const st = siteState();
+  const v = siteCollect();
+  busy(el, true);
+  try {
+    // الصور أولاً (كل صورة بطلب مستقل)، ثم بيانات الصفحة
+    for (const [id, url] of Object.entries(st.pending)) { await Services.savePublicMedia(id, url); st.thumbs[id] = url; delete st.pending[id]; }
+    await Services.savePublicPage(v);
+    st.draft = false; st.heroMedia = v.heroMedia; st.projects.forEach((x) => { x.media = !!(x.media || st.thumbs['p-' + x.key]); });
+    toast('حُفظت الصفحة التعريفية', v.published ? 'منشورة الآن للعامة' : 'غير منشورة — استخدم «معاينة» لرؤيتها');
+  } catch (err) { toast('تعذّر الحفظ', err instanceof H.InputError ? err.message : fbError(err), 'error'); }
+  finally { busy(el, false); render(); }
+}
+
+/* ---------- طلبات العملاء ---------- */
+const LEAD_STATUS = { new: ['جديد', 'warn'], contacted: ['تم التواصل', 'info'], won: ['أصبح عميلاً', 'ok'], lost: ['لم يكتمل', 'neutral'] };
+function renderLeads() {
+  const f = S.tabs.leads || 'open';
+  const all = S.data.leads;
+  const list = all.filter((l) => (f === 'open' ? ['new', 'contacted'].includes(l.status) : f === 'all' ? true : l.status === f));
+  const cnt = (k) => all.filter((l) => (k === 'open' ? ['new', 'contacted'].includes(l.status) : k === 'all' || l.status === k)).length;
+  const chips = [['open', 'قيد المتابعة'], ['new', 'جديدة'], ['won', 'أصبحوا عملاء'], ['lost', 'لم تكتمل'], ['all', 'الكل']];
+  return `<div class="toolbar"><div class="chips">${chips.map(([k, l]) => `<button type="button" class="chip ${f === k ? 'active' : ''}" data-action="tab" data-key="leads" data-tab="${k}">${l}<span class="n">${cnt(k)}</span></button>`).join('')}</div>
+    <a class="btn btn-ghost btn-sm" href="about.html" target="_blank" rel="noopener">${icon('globe')}الصفحة التعريفية</a></div>
+    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>الاسم</th><th>الجوال</th><th class="hide-sm">نوع العمل</th><th class="hide-sm">التفاصيل</th><th>الحالة</th><th><span class="sr">إجراءات</span></th></tr></thead><tbody>
+    ${list.map((l) => `<tr class="${l.status === 'new' ? 'row-warn' : ''}"><td class="nowrap">${l.at ? fmtDateTime(l.at) : '—'}</td><td><div class="cell-main">${esc(l.name)}</div>${l.city ? `<div class="cell-sub">${esc(l.city)}</div>` : ''}</td>
+      <td><a class="num link" href="tel:${esc(l.phone)}">${esc(l.phone)}</a> <a class="btn btn-quiet btn-sm" href="https://wa.me/${esc(String(l.phone).replace(/^0/, '966').replace(/^\+/, ''))}" target="_blank" rel="noopener" title="واتساب">${icon('send')}</a></td>
+      <td class="hide-sm">${esc(l.service || '—')}</td><td class="hide-sm clamp">${esc(l.message || '')}${l.note ? `<div class="cell-sub">ملاحظة: ${esc(l.note)}</div>` : ''}</td><td>${pill(LEAD_STATUS, l.status)}</td>
+      <td><div class="row-actions">${l.status === 'new' ? btn('lead-status', 'تم التواصل', { cls: 'btn-quiet btn-sm', ic: 'check', data: { id: l.id, st: 'contacted' }, perm: 'customer.write' }) : ''}
+        ${!l.customerId && l.status !== 'lost' ? btn('lead-convert', 'تحويل لعميل', { cls: 'btn-quiet btn-sm', ic: 'users', data: { id: l.id }, perm: 'customer.write' }) : ''}
+        ${['new', 'contacted'].includes(l.status) ? btn('lead-status', 'لم يكتمل', { cls: 'btn-quiet btn-sm', ic: 'x', data: { id: l.id, st: 'lost' }, perm: 'customer.write' }) : ''}</div></td></tr>`).join('')}
+    </tbody></table></div>` : empty('inbox', f === 'open' ? 'لا توجد طلبات قيد المتابعة' : 'لا توجد طلبات', 'تصل هنا طلبات «عرض السعر» من الصفحة التعريفية فور إرسالها.')}</div>`;
+}
+
+/* =====================================================================
    الأصول الثابتة
    ===================================================================== */
 function renderAssets() {
@@ -2340,7 +2560,7 @@ function renderReports() {
    سجل المراجعة
    ===================================================================== */
 const AUDIT_ACTIONS = { create: 'إنشاء', update: 'تعديل', issue: 'إصدار', void: 'إلغاء', cancel: 'إلغاء', post: 'اعتماد', reverse: 'عكس', archive: 'أرشفة', restore: 'استعادة', delete: 'حذف', activate: 'تفعيل', deactivate: 'إيقاف', import: 'استيراد', terminate: 'إنهاء خدمة', pay: 'صرف' };
-const AUDIT_ENTITIES = { invoice: 'فاتورة', payment: 'سند قبض', journal: 'قيد', customer: 'عميل', item: 'صنف', purchase: 'مشتريات', asset: 'أصل', depreciation: 'إهلاك', account: 'حساب', user: 'مستخدم', settings: 'إعدادات', system: 'النظام', bank: 'كشف الحساب', employee: 'موظف', advance: 'سلفة', payroll: 'مسير رواتب' };
+const AUDIT_ENTITIES = { invoice: 'فاتورة', payment: 'سند قبض', journal: 'قيد', customer: 'عميل', item: 'صنف', purchase: 'مشتريات', asset: 'أصل', depreciation: 'إهلاك', account: 'حساب', user: 'مستخدم', settings: 'إعدادات', system: 'النظام', bank: 'كشف الحساب', lead: 'طلب عرض سعر', employee: 'موظف', advance: 'سلفة', payroll: 'مسير رواتب' };
 function filteredAudit() {
   const { user, entity } = S.auditFilter;
   return S.data.audit.filter((a) => (!user || a.actor === user) && (!entity || a.entity === entity) && matches('aud', a.summary));
@@ -2416,34 +2636,7 @@ function renderSettings() {
           : `<span class="pill warn">حفظ محلي</span><p class="cell-sub mt">لم يُربط Firebase بعد؛ البيانات في هذا المتصفح فقط.</p>
              ${S.user.username === OWNER ? btn('wipe-local', 'مسح كل البيانات المحلية', { cls: 'btn-danger btn-sm', ic: 'trash' }) : ''}`}</div></div>
     </div></div>
-    ${renderPublicEditor()}
     ${renderZatcaCard()}`;
-}
-/** محرر الصفحة التعريفية العامة (تُقرأ بدون تسجيل دخول من about.html) */
-function renderPublicEditor() {
-  const p = S.data.publicPage || {}, ro = !can('settings.write');
-  const lines = (a) => (a || []).map((x) => (typeof x === 'string' ? x : `${x.name}${x.detail ? ' — ' + x.detail : ''}`)).join('\n');
-  const t = (id, label, val, ph, rows = 3, max = 1500) => `<div class="field span-2"><label for="${id}">${label}</label><textarea class="textarea" id="${id}" rows="${rows}" maxlength="${max}" placeholder="${esc(ph)}" ${ro ? 'readonly' : ''}>${esc(val || '')}</textarea></div>`;
-  const i = (id, label, val, attrs = '') => `<div class="field"><label for="${id}">${label}</label><input class="input" id="${id}" value="${esc(val || '')}" ${ro ? 'readonly' : ''} ${attrs}></div>`;
-  return `<div class="card mt"><div class="card-head"><h3>${icon('building')}الصفحة التعريفية للشركة</h3>
-      <span class="hint">صفحة عامة يراها أي أحد بدون دخول</span>
-      <div class="actions">${p.published ? '<span class="pill ok">منشورة</span>' : '<span class="pill neutral">غير منشورة</span>'}<a class="btn btn-ghost btn-sm" href="about.html" target="_blank" rel="noopener">${icon('eye')}فتح الصفحة</a></div></div>
-    <form class="card-body" id="publicForm" data-keep novalidate><div class="form-grid">
-      ${i('pgTag', 'العبارة الرئيسية', p.tagline, 'maxlength="120" placeholder="مثال: مقاولات عامة وتشطيبات بجودة والتزام بالمواعيد"')}
-      ${i('pgCity', 'المدينة', p.city, 'maxlength="40" placeholder="الرياض"')}
-      ${t('pgAbout', 'نبذة عن الشركة', p.about, 'من نحن، منذ متى، ما الذي يميزنا…', 4)}
-      ${t('pgServices', 'خدماتنا (خدمة في كل سطر)', lines(p.services), 'مقاولات عامة\nأعمال التشطيبات\nالترميم والصيانة', 5, 1200)}
-      ${t('pgProjects', 'مشاريع منفذة (سطر لكل مشروع: الاسم — التفاصيل)', lines(p.projects), 'فيلا سكنية بحي الملقا — عظم وتشطيب كامل 2025', 5, 1500)}
-      ${i('pgPhone', 'رقم التواصل', p.phone, 'inputmode="tel" maxlength="15" dir="ltr" placeholder="05XXXXXXXX"')}
-      ${i('pgWhats', 'واتساب', p.whatsapp, 'inputmode="tel" maxlength="15" dir="ltr" placeholder="9665XXXXXXXX"')}
-      ${i('pgEmail', 'البريد الإلكتروني', p.email, 'type="email" maxlength="80" dir="ltr"')}
-      ${i('pgMap', 'رابط الموقع على الخريطة', p.mapUrl, 'maxlength="300" dir="ltr" placeholder="https://maps.app.goo.gl/…"')}
-      <div class="span-2">${i('pgAddress', 'العنوان', p.address, 'maxlength="200"')}</div>
-      <label class="check span-2"><input type="checkbox" id="pgPub" ${p.published ? 'checked' : ''} ${ro ? 'disabled' : ''}> نشر الصفحة (عند الإلغاء تظهر «الصفحة قيد الإعداد»)</label>
-    </div>
-    <p class="cell-sub">يظهر في الصفحة أيضاً اسم المنشأة والسجل التجاري والرقم الضريبي من «بيانات المنشأة». لا تضع أرقاماً أو مشاريع غير حقيقية.</p>
-    ${ro ? '' : `<div class="bar-actions"><button class="btn btn-primary" type="submit">${icon('save')}حفظ الصفحة</button>${btn('ai-draft-page', 'اقترح صياغة بالذكاء الاصطناعي', { cls: 'btn-ghost', ic: 'spark', perm: 'ai.use' })}</div>`}
-    </form></div>`;
 }
 /** حالة الفوترة الإلكترونية بصراحة: ما يغطيه النظام وما لا يغطيه */
 function renderZatcaCard() {
@@ -3050,6 +3243,11 @@ function confirmTwice(el, label = 'اضغط مرة أخرى للتأكيد') {
 }
 
 const ACTIONS = {
+  'site-add-proj': () => { const st = siteState(); siteCollect(); if (st.projects.length < 12) st.projects.push({ key: newKey(), name: '', place: '', year: '', detail: '', media: false }); render(); },
+  'site-del-media': (el) => { const st = siteState(); siteCollect(); const x = st.lists[el.dataset.kind].splice(Number(el.dataset.k), 1)[0]; if (x) delete st.pending[MEDIA_KINDS[el.dataset.kind][0] + '-' + x.key]; render(); },
+  'site-del-proj': (el) => { const st = siteState(); siteCollect(); const x = st.projects.splice(Number(el.dataset.k), 1)[0]; if (x) delete st.pending['p-' + x.key]; render(); },
+  'lead-status': (el) => run(el, () => Services.updateLead(el.dataset.id, { status: el.dataset.st }), ['حُدّثت حالة الطلب', ''], { close: false }),
+  'lead-convert': (el) => run(el, () => Services.convertLead(el.dataset.id), ['أُضيف عميلاً جديداً', (n) => n], { close: false }),
   'ai-ask': (el) => aiAsk(el.dataset.q),
   'ai-clear': () => { S.ai = { msgs: [], busy: false }; render(); },
   'ai-save-model': (el) => { const m = H.cleanText($('#aiModel').value, 60); if (!/^[a-z0-9.\-]+$/.test(m)) { toast('اسم النموذج غير صالح', '', 'error'); return; } run(el, () => Services.saveAISettings(m), ['حُفظ النموذج', m], { close: false }); },
@@ -3057,16 +3255,18 @@ const ACTIONS = {
   'ai-draft-page': async (el) => {
     busy(el, true);
     try {
-      const notes = ['pgTag', 'pgCity', 'pgAbout', 'pgServices', 'pgProjects'].map((id) => `${id}: ${$('#' + id).value}`).join('\n');
+      const notes = ['pgTag', 'pgLead', 'pgCity', 'pgClass', 'pgAbout', 'pgValues', 'pgServices'].map((id) => `${id}: ${$('#' + id)?.value || ''}`).join('\n');
       const model = await S.db.aiModel(`أنت كاتب محتوى عربي لشركات المقاولات في السعودية. اكتب صياغة مهنية موجزة وصادقة للصفحة التعريفية اعتماداً على ملاحظات المستخدم فقط.
 لا تخترع أرقاماً أو سنوات أو شهادات أو مشاريع أو عملاء غير مذكورين. إن كانت الملاحظات قليلة فاكتب صياغة عامة بلا ادعاءات.
-أعد JSON فقط: {"tagline":"عبارة ≤ 90 حرفاً","about":"فقرة أو فقرتان ≤ 600 حرف","services":["خدمة", "..."]}`, true);
+أعد JSON فقط: {"tagline":"عبارة ≤ 90 حرفاً فيها فاصلة «،» قبل الجزء المميز","lead":"سطر ≤ 160 حرفاً","about":"فقرتان ≤ 700 حرف","values":["4 نقاط قصيرة"],"services":["خدمة", "..."]}`, true);
       const r = await model.generateContent(`اسم المنشأة: ${S.data.company.name || 'الحرف المتكاملة للمقاولات'}\nملاحظات المستخدم:\n${notes}`);
       const o = JSON.parse(r.response.text());
       if (o.tagline) $('#pgTag').value = H.cleanText(o.tagline, 120);
       if (o.about) $('#pgAbout').value = String(o.about).slice(0, 1500);
+      if (o.lead) $('#pgLead').value = H.cleanText(o.lead, 240);
+      if (Array.isArray(o.values) && o.values.length) $('#pgValues').value = o.values.map((x) => H.cleanText(x, 90)).filter(Boolean).slice(0, 6).join('\n');
       if (Array.isArray(o.services) && o.services.length) $('#pgServices').value = o.services.map((x) => H.cleanText(x, 80)).filter(Boolean).slice(0, 12).join('\n');
-      toast('جاهزة للمراجعة', 'عدّل الصياغة ثم اضغط «حفظ الصفحة»');
+      toast('جاهزة للمراجعة', 'عدّل الصياغة ثم اضغط «حفظ»');
     } catch (err) { toast('تعذّر اقتراح الصياغة', aiError(err), 'error'); }
     finally { busy(el, false); }
   },
@@ -3167,6 +3367,25 @@ document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'audUser') { S.auditFilter.user = t.value; render(); }
   if (t.id === 'audEntity') { S.auditFilter.entity = t.value; render(); }
+  if (t.dataset.mlupload) {
+    const kind = t.dataset.mlupload, [pre, , , , max, w] = MEDIA_KINDS[kind], files = [...(t.files || [])]; t.value = '';
+    siteCollect();
+    const st = siteState(), room = max - st.lists[kind].length;
+    if (files.length > room) toast(`يمكن إضافة ${room} صورة فقط هنا`, `الحد ${max}`, 'error');
+    (async () => {
+      let n = 0;
+      for (const file of files.slice(0, room)) { try { const url = await compressImage(file, w); const key = newKey(); st.lists[kind].push({ key, text: '' }); st.pending[pre + '-' + key] = url; n++; render(); } catch (err) { toast('تعذّرت إضافة صورة', `${file.name}: ${err.message}`, 'error'); } }
+      if (n) toast(`أُضيفت ${n} صورة`, 'اضغط «حفظ» لرفعها');
+    })();
+    return;
+  }
+  if (t.dataset.photo) {
+    const id = t.dataset.photo, file = t.files?.[0]; t.value = '';
+    siteCollect();
+    compressImage(file).then((url) => { siteState().pending[id] = url; render(); toast('جاهزة', `الصورة ${Math.round(url.length / 1024)} ك.ب — اضغط «حفظ» لرفعها`); })
+      .catch((err) => toast('تعذّرت إضافة الصورة', err.message, 'error'));
+    return;
+  }
   if (t.id === 'hrMonth' && H.isMonth(t.value)) { S.hrMonth = t.value; render(); return; }
   if (t.id === 'hrShowAll') { S.hrShowAll = t.checked; render(); return; }
   // إعادة الرسم بعد انتقال التركيز للخانة التالية حتى لا يضيع مكان الكتابة
@@ -3204,13 +3423,7 @@ document.addEventListener('submit', async (e) => {
     return;
   }
   if (f.id === 'payrollForm') { e.preventDefault(); return; }
-  if (f.id === 'publicForm') {
-    e.preventDefault();
-    const v = { tagline: $('#pgTag').value, city: $('#pgCity').value, about: $('#pgAbout').value, services: $('#pgServices').value, projects: $('#pgProjects').value,
-      phone: $('#pgPhone').value, whatsapp: $('#pgWhats').value, email: $('#pgEmail').value, mapUrl: $('#pgMap').value, address: $('#pgAddress').value, published: $('#pgPub').checked };
-    run(f.querySelector('[type=submit]'), () => Services.savePublicPage(v), ['حُفظت الصفحة التعريفية', v.published ? 'منشورة الآن' : 'غير منشورة'], { close: false });
-    return;
-  }
+  if (f.id === 'publicForm') { e.preventDefault(); siteSave(f.querySelector('[type=submit]') || document.querySelector('#publicForm [type=submit]')); return; }
   if (f.id === 'aiForm') { e.preventDefault(); const t = $('#aiInput'); const q = t.value; t.value = ''; aiAsk(q); return; }
   if (f.id === 'bankForm') { e.preventDefault(); return; }
   if (f.id === 'periodForm') {
