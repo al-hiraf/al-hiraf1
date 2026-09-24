@@ -67,9 +67,29 @@ service cloud.firestore {
     }
 
     // ---------- الإعدادات ----------
+    // قراءة المجموعة كاملة (يستمع لها البرنامج لحظياً)؛ الكتابة محددة لكل مستند أدناه
+    match /settings/{doc} {
+      allow read: if isMember();
+    }
     match /settings/company {
       allow read: if isMember();
       allow write: if canAny(['settings.write']) && audited();
+    }
+    // الصفحة التعريفية: قراءة عامة بلا دخول، والكتابة لمن يعدّل بيانات المنشأة
+    match /settings/public {
+      allow read: if true;
+      allow write: if canAny(['settings.write']) && audited()
+        && incoming().about is string && incoming().about.size() <= 1500
+        && incoming().services is list && incoming().services.size() <= 12
+        && incoming().projects is list && incoming().projects.size() <= 12;
+    }
+    match /settings/ai {
+      allow read: if isMember();
+      allow write: if canAny(['settings.write']) && audited();
+    }
+    match /settings/hr {
+      allow read: if isMember();
+      allow write: if canAny(['hr.manage']) && audited();
     }
     match /settings/counters {
       allow read: if isMember();
@@ -147,7 +167,10 @@ service cloud.firestore {
           || (incoming().source == 'void' && canAny(['invoice.void']))
           || (incoming().source == 'payment' && canAny(['payment.create']))
           || (incoming().source == 'reversal' && canAny(['payment.reverse', 'journal.reverse']))
-          || (incoming().source == 'purchase' && canAny(['inventory.write']))
+          || (incoming().source == 'purchase' && canAny(['inventory.write', 'bank.import']))
+          || (incoming().source == 'bank' && canAny(['bank.import']))
+          || (incoming().source in ['advance', 'eos'] && canAny(['hr.manage']))
+          || (incoming().source == 'payroll' && canAny(['payroll.run']))
           || (incoming().source == 'asset' && canAny(['asset.write']))
           || (incoming().source == 'depreciation' && canAny(['dep.run']))
         ))
@@ -163,8 +186,8 @@ service cloud.firestore {
         || (existing().status == 'draft' && incoming().status == 'cancelled'
           && (existing().createdBy == uname() || canAny(['journal.post']))
           && changedOnly(['status', 'cancelledBy', 'cancelledAt', 'cancelReason', 'auditId', 'updatedAt', 'updatedBy']))
-        // عكس قيد يدوي مرحّل
-        || (existing().status == 'posted' && incoming().status == 'reversed' && existing().source == 'manual' && canAny(['journal.reverse'])
+        // عكس قيد يدوي أو قيد من كشف الحساب
+        || (existing().status == 'posted' && incoming().status == 'reversed' && existing().source in ['manual', 'bank'] && canAny(['journal.reverse'])
           && changedOnly(['status', 'reversedBy', 'reversedAt', 'reversalId', 'auditId', 'updatedAt', 'updatedBy']))
       );
       allow delete: if false;
@@ -189,7 +212,7 @@ service cloud.firestore {
     }
     match /purchases/{id} {
       allow read: if isMember();
-      allow create: if canAny(['inventory.write']) && audited()
+      allow create: if canAny(['inventory.write', 'bank.import']) && audited()
         && money(incoming().totalH) && incoming().totalH == incoming().netH + incoming().vatH;
       allow update, delete: if false;
     }
@@ -206,6 +229,32 @@ service cloud.firestore {
       allow read: if isMember();
       allow create: if canAny(['dep.run']) && audited() && money(incoming().totalH);
       allow update, delete: if false;
+    }
+
+    // ---------- الموارد البشرية: الرواتب لا يطّلع عليها إلا الموارد البشرية والرواتب والمراجع ----------
+    function hrRead() { return canAny(['hr.manage', 'payroll.run', 'audit.view']); }
+    match /employees/{id} {
+      allow read: if hrRead();
+      allow create: if canAny(['hr.manage']) && audited()
+        && incoming().status == 'active' && money(incoming().basicH) && incoming().basicH > 0;
+      allow update: if canAny(['hr.manage']) && audited() && existing().status == 'active'
+        && incoming().status in ['active', 'terminated'] && money(incoming().basicH);
+      allow delete: if false;
+    }
+    match /advances/{id} {
+      allow read: if hrRead();
+      allow create: if canAny(['hr.manage']) && audited() && money(incoming().amountH) && incoming().amountH > 0;
+      allow update, delete: if false;
+    }
+    match /payrolls/{month} {
+      allow read: if hrRead();
+      allow create: if canAny(['payroll.run']) && audited() && incoming().status == 'draft' && incoming().lines is list;
+      allow update: if canAny(['payroll.run']) && audited() && (
+        (existing().status == 'draft' && incoming().status in ['draft', 'posted'] && incoming().lines is list)
+        || (existing().status == 'posted' && incoming().status == 'paid'
+            && changedOnly(['status', 'paidBy', 'paidAt', 'payAccountId', 'journalIds', 'auditId', 'updatedAt', 'updatedBy']))
+      );
+      allow delete: if false;
     }
 
     // أي مسار آخر مرفوض

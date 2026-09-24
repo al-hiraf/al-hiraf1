@@ -478,6 +478,23 @@
     return { days, fullH, awardH: mulDivRound(fullH, factor[0], factor[1]), factor };
   }
 
+  /* ------------------------------------------------------------------
+     13) رمز QR لهيئة الزكاة (المرحلة الأولى — الحقول 1 إلى 5 بصيغة TLV ثم Base64)
+     1 اسم البائع، 2 الرقم الضريبي، 3 وقت الإصدار ISO، 4 الإجمالي شامل الضريبة، 5 الضريبة
+     ------------------------------------------------------------------ */
+  function zatcaTLV({ seller, vatNo, timestamp, totalH, vatH }) {
+    const enc = new TextEncoder();
+    const fields = [seller, vatNo, timestamp, plainMoney(totalH), plainMoney(vatH)].map((v) => enc.encode(String(v ?? '')));
+    const bytes = [];
+    fields.forEach((v, i) => {
+      if (v.length > 255) throw new InputError('حقل رمز QR أطول من المسموح');
+      bytes.push(i + 1, v.length, ...v);
+    });
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return typeof btoa === 'function' ? btoa(bin) : Buffer.from(bin, 'binary').toString('base64');
+  }
+
   return {
     MAX_H, VAT_BP, QTY, InputError,
     normalizeDigits, parseMoney, parseQty, parseInteger, parseDate, isISODate, isMonth, cleanText,
@@ -489,6 +506,6 @@
     emptyStock, stockIn, stockOut, unitCostH,
     monthIndex, monthlyDepreciation, depreciationSchedule,
     csvMoney, toCSV, computeAlerts,
-    GOSI_DEFAULT, fixedWageH, gosiShares, payrollLine, endOfService,
+    GOSI_DEFAULT, fixedWageH, gosiShares, payrollLine, endOfService, zatcaTLV,
   };
 });

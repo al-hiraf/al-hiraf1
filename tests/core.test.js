@@ -206,3 +206,76 @@ test('مشتريات المصروفات: شامل/قبل/بدون ضريبة —
   const v = C.vatReport([], [{ date: '2026-09-02', netH: 1000, vatH: 150 }, { date: '2026-09-03', netH: 900, vatH: 0 }], '2026-09-01', '2026-09-30');
   assert.equal(v.purchaseCount, 1); assert.equal(v.inputNetH, 1000);
 });
+
+// ---------------- قراءة كشف الحساب ----------------
+const BK = require('../bank.js');
+test('كشف الحساب: CSV بمبلغ موقّع وتواريخ يوم/شهر، وتجاهل الأرصدة والإجماليات', () => {
+  const rows = BK.parseCSV('بنك\nالتاريخ,البيان,المبلغ,الرصيد\n01/09/2026,رصيد افتتاحي,,100\n02/09/2026,"رسوم, خدمة",-11.50,88.50\n13/09/2026,تحويل وارد,"1,200.00",1288.5\n,الإجمالي,1188.5,\n');
+  const d = BK.detectColumns(rows);
+  assert.equal(d.header, 1);
+  const n = BK.normalize(rows, d.map, d.header);
+  assert.deepEqual(n.items.map((i) => [i.date, i.dir, i.amountH]), [['2026-09-02', 'out', 1150], ['2026-09-13', 'in', 120000]]);
+  assert.equal(BK.suggest('رسوم خدمة', 'out'), '5700');
+});
+test('كشف الحساب: المبالغ والتواريخ بصيغها المختلفة', () => {
+  assert.equal(BK.parseAmount('(99.00)'), -9900);
+  assert.equal(BK.parseAmount('1,250.75 DR'), -125075);
+  assert.equal(BK.parseAmount('٨٬٠٠٠٫٥٠'), 800050);
+  assert.equal(BK.parseAmount('SAR 15.1'), 1510);
+  assert.equal(BK.parseAmount('abc'), null);
+  assert.equal(BK.parseDateCell('2026-09-05T10:00:00').iso, '2026-09-05');
+  assert.equal(BK.parseDateCell('05-Sep-2026').iso, '2026-09-05');
+  assert.equal(BK.parseDateCell('46270').iso, '2026-09-05'); // رقم تسلسلي من Excel
+  assert.ok(BK.parseDateCell('1448/03/12').hijri);
+  assert.equal(BK.parseDateCell('31/02/2026').parts.length, 3);
+});
+test('كشف الحساب: عمليتان متطابقتان في يوم واحد بصمتان مختلفتان، والبصمة ثابتة', () => {
+  const items = [{ date: '2026-09-05', dir: 'out', amountH: 1150, desc: 'رسوم' }, { date: '2026-09-05', dir: 'out', amountH: 1150, desc: 'رسوم' }];
+  const a = BK.fingerprints(items), b = BK.fingerprints(items);
+  assert.notEqual(a[0], a[1]); assert.deepEqual(a, b);
+});
+
+// ---------------- الموارد البشرية ----------------
+test('التأمينات: السعودي 9.75% و11.75%، غير السعودي 2% على المنشأة، والحد الأعلى 45,000', () => {
+  const sa = { basicH: 500000, housingH: 125000, gosi: true, isSaudi: true };
+  assert.deepEqual(C.gosiShares(sa), { baseH: 625000, empH: 60938, erH: 73438 });
+  assert.deepEqual(C.gosiShares({ ...sa, isSaudi: false }), { baseH: 625000, empH: 0, erH: 12500 });
+  assert.equal(C.gosiShares({ ...sa, basicH: 6000000 }).baseH, 4500000);
+  assert.deepEqual(C.gosiShares({ ...sa, gosi: false }), { baseH: 0, empH: 0, erH: 0 });
+});
+test('سطر المسير: الغياب = الثابت ÷ 30 × الأيام، والصافي = الإجمالي − التأمينات − السلفة', () => {
+  const e = { basicH: 500000, housingH: 125000, transportH: 50000, gosi: true, isSaudi: true };
+  const l = C.payrollLine(e, { absenceDays: 3, overtimeH: 20000, bonusH: 10000, penaltyH: 5000, advanceH: 50000 });
+  assert.equal(l.fixedH, 675000); assert.equal(l.absenceH, 67500);
+  assert.equal(l.grossH, 675000 + 20000 + 10000 - 67500 - 5000);
+  assert.equal(l.netH, l.grossH - 60938 - 50000);
+  assert.throws(() => C.payrollLine(e, { absenceDays: 31 }));
+  // القيد متوازن دائماً: الإجمالي + حصة المنشأة = التأمينات (الحصتان) + السلفة + الصافي
+  const r = rng(9);
+  for (let i = 0; i < 2000; i++) {
+    const emp = { basicH: rint(r, 100000, 5000000), housingH: rint(r, 0, 1500000), transportH: rint(r, 0, 100000), otherH: rint(r, 0, 100000), gosi: r() > 0.2, isSaudi: r() > 0.5 };
+    const x = C.payrollLine(emp, { absenceDays: rint(r, 0, 5), overtimeH: rint(r, 0, 50000), advanceH: rint(r, 0, 50000) });
+    assert.equal(x.grossH + x.gosiErH, x.gosiEmpH + x.gosiErH + x.advanceH + x.netH);
+  }
+});
+test('نهاية الخدمة: نصف شهر لأول 5 سنوات ثم شهر، وكسور الاستقالة', () => {
+  const w = 1000000; // أجر 10,000
+  assert.equal(C.endOfService({ wageH: w, hireDate: '2020-01-01', endDate: '2020-01-01' }).awardH, 0);
+  assert.equal(C.endOfService({ wageH: w, hireDate: '2021-01-01', endDate: '2023-01-01' }).fullH, C.mulDivRound(w, 730, 730)); // سنتان = شهر كامل
+  const ten = C.endOfService({ wageH: w, hireDate: '2014-01-01', endDate: '2024-01-01' });
+  assert.equal(ten.fullH, C.mulDivRound(w, 1825, 730) + C.mulDivRound(w, ten.days - 1825, 365)); // 2.5 + ~5 أشهر
+  assert.equal(C.endOfService({ wageH: w, hireDate: '2024-06-01', endDate: '2026-01-01', reason: 'resign' }).awardH, 0);
+  const r3 = C.endOfService({ wageH: w, hireDate: '2023-01-01', endDate: '2026-01-01', reason: 'resign' });
+  assert.equal(r3.awardH, C.mulDivRound(r3.fullH, 1, 3));
+  const r7 = C.endOfService({ wageH: w, hireDate: '2019-01-01', endDate: '2026-01-01', reason: 'resign' });
+  assert.equal(r7.awardH, C.mulDivRound(r7.fullH, 2, 3));
+  assert.equal(C.endOfService({ wageH: w, hireDate: '2014-01-01', endDate: '2026-01-01', reason: 'resign' }).awardH, C.endOfService({ wageH: w, hireDate: '2014-01-01', endDate: '2026-01-01' }).awardH);
+});
+
+test('رمز QR لهيئة الزكاة يطابق مثال الهيئة الرسمي (TLV ثم Base64)', () => {
+  assert.equal(C.zatcaTLV({ seller: 'Bobs Records', vatNo: '310122393500003', timestamp: '2022-04-25T15:30:00Z', totalH: 100000, vatH: 15000 }),
+    'AQxCb2JzIFJlY29yZHMCDzMxMDEyMjM5MzUwMDAwMwMUMjAyMi0wNC0yNVQxNTozMDowMFoEBzEwMDAuMDAFBjE1MC4wMA==');
+  // اسم عربي: الطول بالبايت لا بالحرف
+  const b = Buffer.from(C.zatcaTLV({ seller: 'الحرف', vatNo: '300000000000003', timestamp: '2026-09-24T10:00:00Z', totalH: 115, vatH: 15 }), 'base64');
+  assert.equal(b[0], 1); assert.equal(b[1], Buffer.byteLength('الحرف')); assert.equal(b.subarray(2, 2 + b[1]).toString(), 'الحرف');
+});

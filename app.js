@@ -65,6 +65,7 @@ const PERM_GROUPS = [
   ['المحاسبة', [['journal.create', 'إنشاء قيود يدوية'], ['journal.post', 'اعتماد وترحيل القيود'], ['journal.reverse', 'عكس القيود المرحّلة'], ['bank.import', 'استيراد كشف الحساب'], ['accounts.write', 'إضافة حسابات لدليل الحسابات']]],
   ['المشتريات والأصول', [['inventory.write', 'فواتير المشتريات والمصروفات'], ['asset.write', 'تسجيل الأصول الثابتة'], ['dep.run', 'احتساب الإهلاك الشهري']]],
   ['الموارد البشرية', [['hr.manage', 'الموظفون والسلف ونهاية الخدمة'], ['payroll.run', 'إعداد مسير الرواتب واعتماده وصرفه']]],
+  ['الذكاء الاصطناعي', [['ai.use', 'استخدام المساعد الذكي والتصنيف الذكي']]],
   ['الرقابة والإدارة', [['reports.export', 'تصدير وطباعة التقارير'], ['audit.view', 'عرض سجل المراجعة'], ['settings.write', 'تعديل بيانات المنشأة'], ['users.manage', 'إدارة المستخدمين والصلاحيات']]],
 ];
 const ALL_PERMS = PERM_GROUPS.flatMap((g) => g[1].map((p) => p[0]));
@@ -72,8 +73,8 @@ const PERM_LABEL = Object.fromEntries(PERM_GROUPS.flatMap((g) => g[1]));
 const ROLES = {
   admin: { label: 'مدير النظام', perms: ALL_PERMS },
   cfo: { label: 'المدير المالي', perms: ALL_PERMS.filter((p) => p !== 'users.manage') },
-  accountant: { label: 'محاسب', perms: ['customer.write', 'invoice.write', 'invoice.issue', 'payment.create', 'journal.create', 'bank.import', 'inventory.write', 'asset.write', 'dep.run', 'hr.manage', 'payroll.run', 'reports.export'] },
-  auditor: { label: 'مراجع', perms: ['audit.view', 'reports.export'] },
+  accountant: { label: 'محاسب', perms: ['customer.write', 'invoice.write', 'invoice.issue', 'payment.create', 'journal.create', 'bank.import', 'inventory.write', 'asset.write', 'dep.run', 'hr.manage', 'payroll.run', 'ai.use', 'reports.export'] },
+  auditor: { label: 'مراجع', perms: ['audit.view', 'reports.export', 'ai.use'] },
   sales: { label: 'مبيعات', perms: ['customer.write', 'invoice.write', 'invoice.issue', 'payment.create'] },
   hr: { label: 'موارد بشرية', perms: ['hr.manage', 'payroll.run'] },
   viewer: { label: 'مشاهدة فقط', perms: [] },
@@ -138,7 +139,8 @@ const canHR = () => can('hr.manage') || can('payroll.run') || can('audit.view');
 /* =====================================================================
    3-أ) طبقة البيانات: Firebase
    ===================================================================== */
-const FB_VER = '10.12.2';
+const FB_VER = '12.18.0';
+const AI_MODEL = 'gemini-3.8-flash'; // يمكن تغييره من شاشة المساعد الذكي
 const CloudDB = {
   mode: 'cloud', fb: null, app: null, auth: null, db: null, config: null, unsubs: [],
 
@@ -150,6 +152,15 @@ const CloudDB = {
     this.app = app.initializeApp(config);
     this.auth = auth.getAuth(this.app);
     this.db = fs.getFirestore(this.app);
+  },
+  /** نموذج Gemini عبر Firebase AI Logic (مزوّد Gemini Developer API — متاح في الخطة المجانية، ولا مفتاح في الكود) */
+  async aiModel(systemInstruction, json = false) {
+    if (!this.aiMod) {
+      this.aiMod = await import(`https://www.gstatic.com/firebasejs/${FB_VER}/firebase-ai.js`);
+      this.ai = this.aiMod.getAI(this.app, { backend: new this.aiMod.GoogleAIBackend() });
+    }
+    return this.aiMod.getGenerativeModel(this.ai, { model: S.data.aiModel || AI_MODEL, systemInstruction,
+      generationConfig: json ? { responseMimeType: 'application/json', temperature: 0.1 } : { temperature: 0.4, maxOutputTokens: 2048 } });
   },
   authUsername() { const u = this.auth.currentUser; return u && u.email ? u.email.split('@')[0] : null; },
   onAuth(cb) { this.fb.onAuthStateChanged(this.auth, () => cb(this.authUsername())); },
@@ -274,6 +285,7 @@ const LocalDB = {
     this.logins[u] = await sha256(toSecret(next)); this.save();
   },
   subscribe(onData) { this.cb = onData; onData(structuredClone(this.state)); },
+  async aiModel() { throw new H.InputError('المساعد الذكي يعمل بعد ربط البرنامج بـ Firebase وتفعيل AI Logic'); },
   stop() { this.cb = null; },
   /** نفس قيود Firestore: لا قراءة بعد أول كتابة، والكتابة ذرّية (كلها أو لا شيء) */
   async tx(fn) {
@@ -357,6 +369,17 @@ function writeJournal(t, counters, { date, memo, lines, source, sourceId = '', s
   if (extra) Object.assign(doc, extra);
   t.set('journals', id, doc);
   return { id, no };
+}
+/** رمز QR الإلزامي على الفاتورة (هيئة الزكاة، المرحلة الأولى) — يُرسم SVG داخل الفاتورة ويُطبع معها */
+function zatcaQR(inv, co) {
+  if (!inv.number || !['issued', 'void'].includes(inv.status) || typeof window.qrcode !== 'function') return '';
+  if (!co.vat) return '<div class="zqr missing">أضف الرقم الضريبي من الإعدادات ليظهر رمز QR</div>';
+  try {
+    const ts = (inv.issuedAt ? new Date(inv.issuedAt) : new Date(inv.issueDate + 'T00:00:00Z')).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const data = H.zatcaTLV({ seller: co.name || 'الحرف المتكاملة للمقاولات', vatNo: co.vat, timestamp: ts, totalH: inv.totalH, vatH: inv.vatH });
+    const qr = window.qrcode(0, 'M'); qr.addData(data); qr.make();
+    return `<div class="zqr" title="رمز هيئة الزكاة والضريبة والجمارك">${qr.createSvgTag({ cellSize: 3, margin: 2, scalable: true, alt: 'رمز QR للفاتورة' })}</div>`;
+  } catch (e) { console.warn(e); return ''; }
 }
 /* ---------- مساعدات الموارد البشرية ---------- */
 function hrAccountsReady() {
@@ -1069,6 +1092,28 @@ const Services = {
     });
   },
 
+  async saveAISettings(model) {
+    need('settings.write');
+    await S.db.tx(async (t) => { const meta = audit(t, 'update', 'settings', 'ai', `نموذج المساعد الذكي: ${model}`); t.set('settings', 'ai', { model, ...meta }); });
+  },
+  async savePublicPage(v) {
+    need('settings.write');
+    const c = S.data.company;
+    const url = H.cleanText(v.mapUrl, 300);
+    if (url && !/^https:\/\/[^\s<>"']+$/.test(url)) throw new H.InputError('رابط الخريطة يجب أن يبدأ بـ https://');
+    const email = H.cleanText(v.email, 80);
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new H.InputError('البريد الإلكتروني غير صالح');
+    const phone = H.normalizeDigits(v.phone || ''), whatsapp = H.normalizeDigits(v.whatsapp || '').replace(/^\+/, '');
+    if (phone && !/^\+?\d{9,14}$/.test(phone)) throw new H.InputError('رقم التواصل غير صالح');
+    if (whatsapp && !/^\d{9,14}$/.test(whatsapp)) throw new H.InputError('رقم الواتساب بالصيغة الدولية بدون + (مثال: 9665XXXXXXXX)');
+    const list = (t, max, len) => String(t || '').split('\n').map((x) => H.cleanText(x, len)).filter(Boolean).slice(0, max);
+    const doc = { published: !!v.published, tagline: H.cleanText(v.tagline, 120), city: H.cleanText(v.city, 40), about: String(v.about || '').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim().slice(0, 1500),
+      services: list(v.services, 12, 80),
+      projects: list(v.projects, 12, 160).map((l) => { const [name, ...rest] = l.split(/\s+[—–-]\s+/); return { name: H.cleanText(name, 80), detail: H.cleanText(rest.join(' — '), 120) }; }),
+      phone, whatsapp, email, mapUrl: url, address: H.cleanText(v.address, 200),
+      companyName: c.name || 'الحرف المتكاملة للمقاولات', cr: c.cr || '', vat: c.vat || '' };
+    await S.db.tx(async (t) => { const meta = audit(t, 'update', 'settings', 'public', `تحديث الصفحة التعريفية (${doc.published ? 'منشورة' : 'غير منشورة'})`); t.set('settings', 'public', { ...doc, ...meta }); });
+  },
   /* ---------- الأصول الثابتة والإهلاك ---------- */
   async createAsset(f) {
     need('asset.write');
@@ -1193,7 +1238,7 @@ function derive(st) {
   };
   const catalog = purchaseCatalog(purchases);
   return {
-    accounts, journals, customers, items, stockMoves, purchases, catalog, employees, advances, payrolls, hr: { ...H.GOSI_DEFAULT, ...hrSet }, invoices, payments, assets, depRuns, users, audit: auditLog,
+    accounts, journals, customers, items, stockMoves, purchases, catalog, employees, advances, payrolls, hr: { ...H.GOSI_DEFAULT, ...hrSet }, aiModel: (st.settings || {}).ai?.model || '', publicPage: (st.settings || {}).public || null, invoices, payments, assets, depRuns, users, audit: auditLog,
     company: (st.settings || {}).company || {}, counters: (st.settings || {}).counters || {}, accBal, alerts, recon,
   };
 }
@@ -1381,16 +1426,17 @@ function onRemoteChange(coll, type, doc) {
    ===================================================================== */
 const SECTIONS = {
   dashboard: { title: 'لوحة التحكم', icon: 'home', render: renderDashboard },
+  ai: { title: 'المساعد الذكي', icon: 'spark', sub: 'اسأل عن أرقامك: المصروفات، التحصيل، النقدية، الرواتب', render: renderAI, perm: 'ai.use' },
   invoices: { title: 'الفواتير', icon: 'file', group: 'المبيعات', sub: 'فواتير ضريبية بضريبة القيمة المضافة 15%', render: renderInvoices },
   customers: { title: 'العملاء', icon: 'users', group: 'المبيعات', sub: 'بيانات العملاء وأرصدتهم', render: renderCustomers },
   payments: { title: 'سندات القبض', icon: 'wallet', group: 'المبيعات', sub: 'المبالغ المحصّلة من العملاء', render: renderPayments },
   inventory: { title: 'المشتريات والمصروفات', icon: 'box', group: 'المشتريات والأصول', sub: 'سجّل فاتورة المورد فقط — الأصناف تُحفظ تلقائياً', render: renderInventory },
   assets: { title: 'الأصول الثابتة', icon: 'building', group: 'المشتريات والأصول', sub: 'الإهلاك بطريقة القسط الثابت', render: renderAssets },
   bank: { title: 'كشف الحساب', icon: 'bank', group: 'المحاسبة', sub: 'ارفع كشف البنك وتُسجَّل المصروفات والإيرادات دفعة واحدة', render: renderBank, perm: 'bank.import' },
-  hr: { title: 'الموارد البشرية', icon: 'id', group: 'الموارد البشرية', sub: 'الموظفون والرواتب والسلف ونهاية الخدمة', render: renderHR, perm: ['hr.manage', 'payroll.run', 'audit.view'] },
   journal: { title: 'القيود اليومية', icon: 'book', group: 'المحاسبة', sub: 'قيد مزدوج متزن — المُنشئ لا يعتمد قيده', render: renderJournal },
   accounts: { title: 'دليل الحسابات', icon: 'layers', group: 'المحاسبة', sub: 'الأرصدة من القيود المرحّلة', render: renderAccounts },
   reports: { title: 'التقارير المالية', icon: 'chart', group: 'المحاسبة', sub: 'قائمة الدخل والميزانية والضريبة والمطابقات', render: renderReports },
+  hr: { title: 'الموارد البشرية', icon: 'id', group: 'الموارد البشرية', sub: 'الموظفون والرواتب والسلف ونهاية الخدمة', render: renderHR, perm: ['hr.manage', 'payroll.run', 'audit.view'] },
   audit: { title: 'سجل المراجعة', icon: 'shield', group: 'الإدارة', sub: 'كل عملية: من، ماذا، ومتى', render: renderAudit, perm: 'audit.view' },
   users: { title: 'المستخدمون والصلاحيات', icon: 'key', group: 'الإدارة', sub: 'إضافة وإيقاف وحذف المستخدمين وتحديد صلاحياتهم', render: renderUsers, perm: 'users.manage' },
   settings: { title: 'الإعدادات', icon: 'sliders', group: 'الإدارة', sub: 'بيانات المنشأة وحسابي', render: renderSettings },
@@ -1744,7 +1790,7 @@ function renderBank() {
   const optHtml = (sel) => groups.map(([l, list]) => `<optgroup label="${esc(l)}">${list.map((a) => `<option value="${esc(a.id)}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</optgroup>`).join('');
   return `<form id="bankForm" data-keep novalidate>
     <div class="toolbar"><span class="pill info">${icon('file')}${esc(st.file)}</span><span class="cell-sub">الحساب: <b>${esc(bankAcc?.name || '')}</b></span>
-      <button type="button" class="btn btn-ghost btn-sm" data-action="bk-reset">${icon('x')}ملف آخر</button></div>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="bk-reset">${icon('x')}ملف آخر</button>${btn('bk-ai', 'تصنيف ذكي', { cls: 'btn-ghost btn-sm', ic: 'spark', perm: 'ai.use' })}</div>
     <div class="card kpis-card"><div class="kpis bank-kpis">
       <div class="kpi hero"><div class="kpi-label">عمليات مختارة للترحيل</div><div class="kpi-value">${inc.length}<small>من ${items.length}</small></div><div class="kpi-meta">${dups ? `${dups} سبق استيرادها وستُتجاهل` : 'لا توجد عمليات مكررة'}</div></div>
       <div class="kpi"><div class="kpi-label"><span class="dot bad-bg"></span>السحوبات</div><div class="kpi-value">${M(outH)}<small>ر.س</small></div><div class="kpi-meta">${inc.filter((r) => r.dir === 'out').length} عملية</div></div>
@@ -1769,7 +1815,7 @@ function renderBank() {
           return `<tr class="${r.dup ? 'row-dup' : ''} ${r.include ? '' : 'row-off'}">
           <td class="c"><input type="checkbox" data-bk="inc" data-i="${i}" ${r.include ? 'checked' : ''} ${r.dup ? 'disabled' : ''} aria-label="ترحيل العملية"></td>
           <td class="nowrap num">${fmtDate(r.date)}</td>
-          <td class="bank-desc">${esc(r.desc)}${r.dup ? ' <span class="pill neutral">مستوردة سابقاً</span>' : r.learned ? ' <span class="pill ok" title="تصنيف تعلّمه النظام من اختيارك السابق">محفوظ</span>' : ''}</td>
+          <td class="bank-desc">${esc(r.desc)}${r.dup ? ' <span class="pill neutral">مستوردة سابقاً</span>' : r.learned ? ' <span class="pill ok" title="تصنيف تعلّمه النظام من اختيارك السابق">محفوظ</span>' : r.ai && !r.touched ? ' <span class="pill info" title="اقتراح من الذكاء الاصطناعي">ذكي</span>' : ''}</td>
           <td class="money bad-text">${r.dir === 'out' ? M(r.amountH) : ''}</td><td class="money ok-text">${r.dir === 'in' ? M(r.amountH) : ''}</td>
           <td><select class="select sm bank-acc" data-bk="acc" data-i="${i}" aria-label="التصنيف" ${r.dup ? 'disabled' : ''}>${optHtml(r.accountId)}</select></td>
           <td class="c">${isExp ? `<input type="checkbox" data-bk="vat" data-i="${i}" ${r.vat ? 'checked' : ''} ${r.dup ? 'disabled' : ''} aria-label="شامل الضريبة">` : '<span class="faint">—</span>'}</td></tr>`;
@@ -2007,6 +2053,138 @@ function payPayrollModal() {
 }
 
 /* =====================================================================
+   المساعد الذكي (Gemini عبر Firebase AI Logic)
+   ===================================================================== */
+const AI_SYSTEM = `أنت «المساعد المالي» داخل نظام محاسبة شركة مقاولات سعودية.
+- أجب بالعربية الفصحى المبسطة، باختصار ووضوح، وابدأ بالجواب المباشر ثم التفاصيل.
+- اعتمد فقط على «بيانات المنشأة» المرفقة. إن لم تكفِ البيانات للإجابة فقل ذلك صراحة واذكر ما ينقص. لا تخترع أرقاماً ولا أسماء.
+- المبالغ بالريال السعودي بفاصل الآلاف وخانتين عشريتين.
+- عند التحليل قدّم ملاحظات عملية قابلة للتنفيذ (تحصيل، تقليل مصروف، سيولة) بدون مبالغة.
+- لست مستشاراً ضريبياً أو قانونياً معتمداً: في مسائل الزكاة والضريبة ونظام العمل وضّح القاعدة العامة وانصح بالتحقق من الجهة الرسمية.
+- استخدم عناوين قصيرة ونقاطاً عند الحاجة، ولا تستخدم الجداول.`;
+/** ملخص نصي مضغوط لبيانات المنشأة يُرسل مع كل سؤال (بحسب صلاحيات المستخدم) */
+function aiContext() {
+  const d = S.data, today = todayISO(), month = thisMonth(), year = today.slice(0, 4);
+  const f = (h) => H.fmtMoney(h || 0);
+  const L = [`المنشأة: ${d.company.name || 'الحرف المتكاملة للمقاولات'} — تاريخ اليوم ${today}.`];
+  const accName2 = (a) => `${a.number} ${a.name}`;
+  L.push('\n## الأرصدة الحالية (حسب القيود المرحّلة)');
+  d.accounts.forEach((a) => { const b = d.accBal.get(a.id) || 0; if (b) L.push(`- ${accName2(a)} [${ACC_TYPES[a.type]}]: ${f(b)}`); });
+  const isM = H.incomeStatement(d.accounts, d.journals, month + '-01', today), isY = H.incomeStatement(d.accounts, d.journals, year + '-01-01', today);
+  const isTxt = (t, r) => { L.push(`\n## ${t}: الإيرادات ${f(r.totalRevenueH)}، المصروفات ${f(r.totalExpensesH)}، الصافي ${f(r.netH)}`); [...r.revenue, ...r.expenses].sort((a, b) => b.amountH - a.amountH).slice(0, 15).forEach((x) => L.push(`- ${x.account.name}: ${f(x.amountH)}`)); };
+  isTxt(`قائمة الدخل لهذا الشهر (${month})`, isM); isTxt(`قائمة الدخل من بداية ${year}`, isY);
+  L.push('\n## آخر 6 أشهر (إيرادات / مصروفات)');
+  for (let k = 5; k >= 0; k--) { const dt = new Date(); dt.setUTCDate(1); dt.setUTCMonth(dt.getUTCMonth() - k); const m = dt.toISOString().slice(0, 7); const r = H.incomeStatement(d.accounts, d.journals, m + '-01', monthEnd(m)); L.push(`- ${m}: ${f(r.totalRevenueH)} / ${f(r.totalExpensesH)}`); }
+  const open = d.invoices.filter((i) => i.state.remainingH > 0).sort((a, b) => b.state.daysLate - a.state.daysLate);
+  L.push(`\n## الفواتير المفتوحة (${open.length}) — إجمالي المتبقي ${f(d.recon.arSubH)}`);
+  open.slice(0, 25).forEach((i) => L.push(`- ${i.number} | ${i.customerName} | المتبقي ${f(i.state.remainingH)} | الاستحقاق ${i.dueDate}${i.state.daysLate > 0 ? ` | متأخرة ${i.state.daysLate} يوم` : ''}`));
+  L.push('\n## أعمار الذمم'); H.aging(d.invoices, today).buckets.forEach((b) => L.push(`- ${b.label}: ${f(b.h)}`));
+  const top = d.catalog.slice().sort((a, b) => b.netH - a.netH).slice(0, 15);
+  if (top.length) { L.push('\n## أكثر أصناف المشتريات صرفاً (قبل الضريبة)'); top.forEach((c) => L.push(`- ${c.name}: ${f(c.netH)} في ${c.count} فاتورة، آخر سعر ${f(c.lastPriceH)}`)); }
+  const vat = H.vatReport(d.invoices, d.purchases, year + '-01-01', today);
+  L.push(`\n## ضريبة القيمة المضافة من بداية السنة: مخرجات ${f(vat.outputVatH)}، مدخلات ${f(vat.inputVatH)}، الصافي المستحق ${f(vat.netVatH)}`);
+  if (d.alerts.length) { L.push('\n## تنبيهات النظام'); d.alerts.forEach((a) => L.push(`- ${a.text}`)); }
+  if (canHR() && d.employees.length) {
+    const act = d.employees.filter((e) => e.status === 'active');
+    L.push(`\n## الموارد البشرية: ${act.length} موظف نشط (${act.filter((e) => e.isSaudi).length} سعودي)، الرواتب الثابتة الشهرية ${f(H.sumInts(act.map(H.fixedWageH)))}، السلف القائمة ${f(d.recon.advSubH)}، التزام نهاية الخدمة التقديري ${f(H.sumInts(act.map((e) => eosToday(e).awardH)))}`);
+    d.payrolls.slice(0, 3).forEach((p) => p.totals && L.push(`- مسير ${p.id} (${p.status === 'paid' ? 'مصروف' : 'معتمد'}): الإجمالي ${f(p.totals.grossH)}، الصافي ${f(p.totals.netH)}، التأمينات ${f(p.totals.gosiEmpH + p.totals.gosiErH)}`));
+  }
+  return L.join('\n');
+}
+/** تحويل نص الإجابة إلى HTML آمن: هروب كامل أولاً ثم تنسيق بسيط (عناوين، غامق، نقاط) */
+function mdLite(t) {
+  const lines = esc(t).split('\n'); let html = '', inList = false;
+  const inline = (x) => x.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  for (const raw of lines) {
+    const l = raw.trim();
+    const li = l.match(/^([-•*]|\d+[.)])\s+(.*)$/);
+    if (li) { if (!inList) { html += '<ul>'; inList = true; } html += `<li>${inline(li[2])}</li>`; continue; }
+    if (inList) { html += '</ul>'; inList = false; }
+    if (!l) continue;
+    const h = l.match(/^#{1,4}\s+(.*)$/);
+    html += h ? `<h4>${inline(h[1])}</h4>` : `<p>${inline(l)}</p>`;
+  }
+  return html + (inList ? '</ul>' : '');
+}
+function aiError(err) {
+  const m = String(err?.message || err || '');
+  if (err instanceof H.InputError) return m;
+  if (/api-not-enabled|not been used|SERVICE_DISABLED|firebasevertexai|PERMISSION_DENIED|403/i.test(m)) return 'فعّل «AI Logic» في Firebase (AI Services ← AI Logic ← Get started ← Gemini Developer API) ثم أعد المحاولة';
+  if (/quota|RESOURCE_EXHAUSTED|429/i.test(m)) return 'تجاوزت الحد المجاني المؤقت للطلبات؛ انتظر دقيقة ثم أعد المحاولة';
+  if (/model|NOT_FOUND|404/i.test(m)) return 'اسم النموذج غير متاح؛ غيّره من «إعدادات المساعد» أسفل الشاشة';
+  if (/network|fetch|Failed to/i.test(m)) return 'تعذّر الاتصال بخدمة الذكاء الاصطناعي؛ تحقق من الإنترنت';
+  return 'تعذّر الحصول على إجابة: ' + m.slice(0, 160);
+}
+const AI_SUGGEST = ['لخّص الوضع المالي لهذا الشهر', 'أين تذهب أغلب مصروفاتنا؟ وكيف نخففها؟', 'من العملاء المتأخرون في السداد وبكم؟', 'هل النقدية الحالية تكفي للرواتب والالتزامات القادمة؟', 'قارن إيرادات ومصروفات آخر 6 أشهر'];
+function renderAI() {
+  const st = S.ai ||= { msgs: [], busy: false };
+  const msgs = st.msgs.map((m, i) => `<div class="ai-msg ${m.role === 'user' ? 'me' : 'bot'} ${m.error ? 'err' : ''}" ${i === st.msgs.length - 1 && st.busy ? 'id="aiLive"' : ''}>
+      <div class="ai-who">${m.role === 'user' ? esc(S.user.name) : `${icon('spark')}المساعد`}</div><div class="ai-body">${m.role === 'user' ? `<p>${esc(m.text)}</p>` : (m.text ? mdLite(m.text) : '<span class="spinner dark"></span>')}</div></div>`).join('');
+  return `<div class="ai-wrap card">
+    <div class="ai-log" id="aiLog">${st.msgs.length ? msgs : `<div class="ai-hello">${icon('spark')}<b>اسأل عن أرقام منشأتك</b><span>يقرأ المساعد الأرصدة وقائمة الدخل والفواتير المفتوحة والمشتريات${canHR() ? ' وملخص الرواتب' : ''}، ويجيبك منها مباشرة.</span></div>`}</div>
+    <div class="ai-chips">${AI_SUGGEST.map((q) => `<button type="button" class="chip" data-action="ai-ask" data-q="${esc(q)}" ${st.busy ? 'disabled' : ''}>${esc(q)}</button>`).join('')}</div>
+    <form class="ai-compose" id="aiForm" data-keep novalidate><label class="sr" for="aiInput">سؤالك</label>
+      <textarea class="textarea" id="aiInput" rows="2" maxlength="1500" placeholder="اكتب سؤالك… مثال: كم صرفنا على الوقود هذه السنة؟" ${st.busy ? 'disabled' : ''}></textarea>
+      <button class="btn btn-primary" type="submit" ${st.busy ? 'disabled' : ''}>${icon('send')}إرسال</button></form>
+    <div class="ai-foot"><span class="cell-sub">الإجابات من نموذج Gemini عبر Firebase ومبنية على بيانات النظام وقت السؤال (تُرسل له ملخصات مالية، دون كلمات مرور). راجع الأرقام المهمة من التقارير قبل اتخاذ قرار.</span>
+      ${st.msgs.length ? `<button type="button" class="btn btn-quiet btn-sm" data-action="ai-clear">${icon('x')}محادثة جديدة</button>` : ''}</div>
+    ${can('settings.write') ? `<details class="more ai-set"><summary>إعدادات المساعد</summary><div class="form-grid"><div class="field"><label for="aiModel">النموذج</label>
+      <input class="input" id="aiModel" dir="ltr" list="aiModels" value="${esc(S.data.aiModel || AI_MODEL)}"><datalist id="aiModels"><option value="gemini-3.8-flash"><option value="gemini-3.5-flash"><option value="gemini-3.5-flash-lite"></datalist></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-ghost" data-action="ai-save-model">${icon('save')}حفظ</button></div></div></details>` : ''}
+  </div>`;
+}
+async function aiAsk(q) {
+  const st = S.ai ||= { msgs: [], busy: false };
+  q = H.cleanText(q, 1500); if (!q || st.busy) return;
+  need('ai.use');
+  st.msgs.push({ role: 'user', text: q }, { role: 'model', text: '' });
+  st.busy = true; render();
+  const bot = st.msgs[st.msgs.length - 1];
+  const scroll = () => { const l = $('#aiLog'); if (l) l.scrollTop = l.scrollHeight; };
+  scroll();
+  try {
+    const model = await S.db.aiModel(`${AI_SYSTEM}\n\n# بيانات المنشأة\n${aiContext()}`);
+    const contents = st.msgs.slice(0, -1).slice(-12).filter((m) => !m.error).map((m) => ({ role: m.role, parts: [{ text: m.text }] }));
+    const res = await model.generateContentStream({ contents });
+    for await (const ch of res.stream) {
+      bot.text += ch.text();
+      const live = $('#aiLive .ai-body'); if (live) { live.innerHTML = mdLite(bot.text); scroll(); }
+    }
+    if (!bot.text.trim()) bot.text = 'لم تصل إجابة؛ أعد صياغة السؤال.';
+  } catch (err) {
+    console.warn(err);
+    bot.text = aiError(err); bot.error = true;
+  } finally {
+    st.busy = false; render(); scroll(); $('#aiInput')?.focus();
+  }
+}
+/** تصنيف ذكي لعمليات كشف الحساب التي لم يتعرف عليها النظام */
+async function bankAIClassify(el) {
+  const st = S.bank; if (!st?.items) return;
+  need('ai.use');
+  const groups = bankAccountOptions(st.bankAccountId);
+  const allowed = new Map(groups.flatMap(([, l]) => l.map((a) => [a.id, a])));
+  const pending = st.items.map((r, i) => ({ r, i })).filter(({ r }) => !r.dup && !r.touched && !r.learned).slice(0, 250);
+  if (!pending.length) { toast('كل العمليات مصنفة', 'لا توجد عمليات تحتاج تصنيفاً', 'ok'); return; }
+  busy(el, true);
+  try {
+    const model = await S.db.aiModel(`أنت محاسب في شركة مقاولات سعودية. صنّف كل عملية بنكية على أنسب حساب من القائمة فقط.
+السحب (out) يكون عادة مصروفاً أو سداد التزام أو تحويلاً، والإيداع (in) يكون عادة إيراداً أو تمويلاً.
+أعد JSON فقط بالشكل {"items":[{"i":رقم العملية,"a":"معرّف الحساب"}]} لكل العمليات.`, true);
+    const prompt = `الحسابات المتاحة:\n${[...allowed.values()].map((a) => `${a.id} | ${a.name} | ${ACC_TYPES[a.type]}`).join('\n')}\n\nالعمليات:\n${pending.map(({ r, i }) => `${i} | ${r.dir} | ${H.fmtMoney(r.amountH)} | ${r.desc}`).join('\n')}`;
+    const res = await model.generateContent(prompt);
+    const out = JSON.parse(res.response.text());
+    let n = 0;
+    for (const x of out.items || []) {
+      const r = st.items[x.i];
+      if (r && !r.dup && !r.touched && !r.learned && allowed.has(x.a)) { r.accountId = x.a; r.ai = true; n++; }
+    }
+    toast(`صُنّفت ${n} عملية بالذكاء الاصطناعي`, 'راجعها قبل الترحيل؛ المعلَّمة «ذكي» اقتراحات');
+  } catch (err) { console.warn(err); toast('تعذّر التصنيف الذكي', aiError(err), 'error'); }
+  finally { busy(el, false); render(); }
+}
+
+/* =====================================================================
    الأصول الثابتة
    ===================================================================== */
 function renderAssets() {
@@ -2237,7 +2415,43 @@ function renderSettings() {
         ${S.db.mode === 'cloud' ? '<span class="pill ok">أونلاين — مباشر</span><p class="cell-sub mt">البيانات في Firebase، وكل عملية تظهر فوراً عند جميع المستخدمين.</p>'
           : `<span class="pill warn">حفظ محلي</span><p class="cell-sub mt">لم يُربط Firebase بعد؛ البيانات في هذا المتصفح فقط.</p>
              ${S.user.username === OWNER ? btn('wipe-local', 'مسح كل البيانات المحلية', { cls: 'btn-danger btn-sm', ic: 'trash' }) : ''}`}</div></div>
-    </div></div>`;
+    </div></div>
+    ${renderPublicEditor()}
+    ${renderZatcaCard()}`;
+}
+/** محرر الصفحة التعريفية العامة (تُقرأ بدون تسجيل دخول من about.html) */
+function renderPublicEditor() {
+  const p = S.data.publicPage || {}, ro = !can('settings.write');
+  const lines = (a) => (a || []).map((x) => (typeof x === 'string' ? x : `${x.name}${x.detail ? ' — ' + x.detail : ''}`)).join('\n');
+  const t = (id, label, val, ph, rows = 3, max = 1500) => `<div class="field span-2"><label for="${id}">${label}</label><textarea class="textarea" id="${id}" rows="${rows}" maxlength="${max}" placeholder="${esc(ph)}" ${ro ? 'readonly' : ''}>${esc(val || '')}</textarea></div>`;
+  const i = (id, label, val, attrs = '') => `<div class="field"><label for="${id}">${label}</label><input class="input" id="${id}" value="${esc(val || '')}" ${ro ? 'readonly' : ''} ${attrs}></div>`;
+  return `<div class="card mt"><div class="card-head"><h3>${icon('building')}الصفحة التعريفية للشركة</h3>
+      <span class="hint">صفحة عامة يراها أي أحد بدون دخول</span>
+      <div class="actions">${p.published ? '<span class="pill ok">منشورة</span>' : '<span class="pill neutral">غير منشورة</span>'}<a class="btn btn-ghost btn-sm" href="about.html" target="_blank" rel="noopener">${icon('eye')}فتح الصفحة</a></div></div>
+    <form class="card-body" id="publicForm" data-keep novalidate><div class="form-grid">
+      ${i('pgTag', 'العبارة الرئيسية', p.tagline, 'maxlength="120" placeholder="مثال: مقاولات عامة وتشطيبات بجودة والتزام بالمواعيد"')}
+      ${i('pgCity', 'المدينة', p.city, 'maxlength="40" placeholder="الرياض"')}
+      ${t('pgAbout', 'نبذة عن الشركة', p.about, 'من نحن، منذ متى، ما الذي يميزنا…', 4)}
+      ${t('pgServices', 'خدماتنا (خدمة في كل سطر)', lines(p.services), 'مقاولات عامة\nأعمال التشطيبات\nالترميم والصيانة', 5, 1200)}
+      ${t('pgProjects', 'مشاريع منفذة (سطر لكل مشروع: الاسم — التفاصيل)', lines(p.projects), 'فيلا سكنية بحي الملقا — عظم وتشطيب كامل 2025', 5, 1500)}
+      ${i('pgPhone', 'رقم التواصل', p.phone, 'inputmode="tel" maxlength="15" dir="ltr" placeholder="05XXXXXXXX"')}
+      ${i('pgWhats', 'واتساب', p.whatsapp, 'inputmode="tel" maxlength="15" dir="ltr" placeholder="9665XXXXXXXX"')}
+      ${i('pgEmail', 'البريد الإلكتروني', p.email, 'type="email" maxlength="80" dir="ltr"')}
+      ${i('pgMap', 'رابط الموقع على الخريطة', p.mapUrl, 'maxlength="300" dir="ltr" placeholder="https://maps.app.goo.gl/…"')}
+      <div class="span-2">${i('pgAddress', 'العنوان', p.address, 'maxlength="200"')}</div>
+      <label class="check span-2"><input type="checkbox" id="pgPub" ${p.published ? 'checked' : ''} ${ro ? 'disabled' : ''}> نشر الصفحة (عند الإلغاء تظهر «الصفحة قيد الإعداد»)</label>
+    </div>
+    <p class="cell-sub">يظهر في الصفحة أيضاً اسم المنشأة والسجل التجاري والرقم الضريبي من «بيانات المنشأة». لا تضع أرقاماً أو مشاريع غير حقيقية.</p>
+    ${ro ? '' : `<div class="bar-actions"><button class="btn btn-primary" type="submit">${icon('save')}حفظ الصفحة</button>${btn('ai-draft-page', 'اقترح صياغة بالذكاء الاصطناعي', { cls: 'btn-ghost', ic: 'spark', perm: 'ai.use' })}</div>`}
+    </form></div>`;
+}
+/** حالة الفوترة الإلكترونية بصراحة: ما يغطيه النظام وما لا يغطيه */
+function renderZatcaCard() {
+  const c = S.data.company;
+  return `<div class="card mt"><div class="card-head"><h3>${icon('shield')}الفوترة الإلكترونية (هيئة الزكاة والضريبة والجمارك)</h3></div><div class="card-body zatca">
+    <div class="z-row"><span class="pill ok">مفعّل</span><div><b>المرحلة الأولى — الإصدار</b><span class="cell-sub">فاتورة ضريبية/مبسطة برقم تسلسلي لا يتكرر، ورمز QR بالحقول الخمسة (اسم البائع، الرقم الضريبي، الوقت، الإجمالي، الضريبة)، ولا حذف للفواتير بعد إصدارها.${c.vat ? '' : ' <b class="warn-text">أدخل الرقم الضريبي ليظهر الرمز.</b>'}</span></div></div>
+    <div class="z-row"><span class="pill bad">غير مفعّل</span><div><b>المرحلة الثانية — الربط والتكامل مع منصة «فاتورة»</b><span class="cell-sub">إلزامية على المنشآت التي تجاوزت إيراداتها الخاضعة للضريبة 375 ألف ريال في 2022 أو 2023 أو 2024 (الموجة 24، آخر موعد 30 يونيو 2026). تتطلب: شهادة تشفير (CSID) من بوابة فاتورة، وفاتورة XML بصيغة UBL 2.1 موقّعة رقمياً، ورمز QR بتسعة حقول، وإرسال كل فاتورة للهيئة (اعتماد فوري للفواتير الضريبية، وإبلاغ خلال 24 ساعة للمبسطة). هذا لا يمكن تنفيذه بأمان من المتصفح وحده؛ يحتاج خادماً يحفظ مفتاح التوقيع (Firebase Cloud Functions بخطة Blaze) أو الربط عبر مزوّد حلول معتمد من الهيئة.</span></div></div>
+  </div></div>`;
 }
 
 /* =====================================================================
@@ -2402,9 +2616,9 @@ function viewInvoice(id) {
   const pays = S.data.payments.filter((p) => p.invoiceId === id);
   const st = inv.state;
   const doc = `<div class="doc" id="invoiceDoc">
-    <div class="doc-top"><div><div class="doc-title">فاتورة ضريبية</div><div class="cell-main">${esc(co.name || 'الحرف المتكاملة للمقاولات')}</div>
+    <div class="doc-top"><div><div class="doc-title">${cust.vatNo ? 'فاتورة ضريبية' : 'فاتورة ضريبية مبسطة'}</div><div class="cell-main">${esc(co.name || 'الحرف المتكاملة للمقاولات')}</div>
       <div class="cell-sub">${co.vat ? `الرقم الضريبي: <span class="num">${esc(co.vat)}</span>` : 'أضف الرقم الضريبي من الإعدادات'}${co.cr ? ` · س.ت: <span class="num">${esc(co.cr)}</span>` : ''}</div>${co.address ? `<div class="cell-sub">${esc(co.address)}</div>` : ''}</div>
-      <dl class="doc-meta"><dt>رقم الفاتورة</dt><dd class="num start">${esc(inv.number || 'مسودة')}</dd><dt>التاريخ</dt><dd>${fmtDate(inv.issueDate)}</dd><dt>الاستحقاق</dt><dd>${fmtDate(inv.dueDate)}</dd><dt>الحالة</dt><dd>${pill(INV_STATUS, st.key)}</dd></dl></div>
+      <dl class="doc-meta"><dt>رقم الفاتورة</dt><dd class="num start">${esc(inv.number || 'مسودة')}</dd><dt>التاريخ</dt><dd>${fmtDate(inv.issueDate)}</dd><dt>الاستحقاق</dt><dd>${fmtDate(inv.dueDate)}</dd><dt>الحالة</dt><dd>${pill(INV_STATUS, st.key)}</dd></dl>${zatcaQR(inv, co)}</div>
     <div class="doc-parties"><div><h4>العميل</h4><div class="cell-main">${esc(cust.name || inv.customerName)}</div><div class="cell-sub">${esc([cust.company, cust.city, cust.phone].filter(Boolean).join(' · '))}</div>${cust.vatNo ? `<div class="cell-sub">الرقم الضريبي: <span class="num">${esc(cust.vatNo)}</span></div>` : ''}</div>
       ${inv.description ? `<div><h4>البيان</h4><div>${esc(inv.description)}</div></div>` : ''}</div>
     <div class="table-wrap bordered"><table><thead><tr><th>البند</th><th class="money">الكمية</th><th class="money">سعر الوحدة</th><th class="money">الصافي</th><th class="money">الضريبة 15%</th><th class="money">الإجمالي</th></tr></thead><tbody>
@@ -2836,6 +3050,26 @@ function confirmTwice(el, label = 'اضغط مرة أخرى للتأكيد') {
 }
 
 const ACTIONS = {
+  'ai-ask': (el) => aiAsk(el.dataset.q),
+  'ai-clear': () => { S.ai = { msgs: [], busy: false }; render(); },
+  'ai-save-model': (el) => { const m = H.cleanText($('#aiModel').value, 60); if (!/^[a-z0-9.\-]+$/.test(m)) { toast('اسم النموذج غير صالح', '', 'error'); return; } run(el, () => Services.saveAISettings(m), ['حُفظ النموذج', m], { close: false }); },
+  'bk-ai': (el) => bankAIClassify(el),
+  'ai-draft-page': async (el) => {
+    busy(el, true);
+    try {
+      const notes = ['pgTag', 'pgCity', 'pgAbout', 'pgServices', 'pgProjects'].map((id) => `${id}: ${$('#' + id).value}`).join('\n');
+      const model = await S.db.aiModel(`أنت كاتب محتوى عربي لشركات المقاولات في السعودية. اكتب صياغة مهنية موجزة وصادقة للصفحة التعريفية اعتماداً على ملاحظات المستخدم فقط.
+لا تخترع أرقاماً أو سنوات أو شهادات أو مشاريع أو عملاء غير مذكورين. إن كانت الملاحظات قليلة فاكتب صياغة عامة بلا ادعاءات.
+أعد JSON فقط: {"tagline":"عبارة ≤ 90 حرفاً","about":"فقرة أو فقرتان ≤ 600 حرف","services":["خدمة", "..."]}`, true);
+      const r = await model.generateContent(`اسم المنشأة: ${S.data.company.name || 'الحرف المتكاملة للمقاولات'}\nملاحظات المستخدم:\n${notes}`);
+      const o = JSON.parse(r.response.text());
+      if (o.tagline) $('#pgTag').value = H.cleanText(o.tagline, 120);
+      if (o.about) $('#pgAbout').value = String(o.about).slice(0, 1500);
+      if (Array.isArray(o.services) && o.services.length) $('#pgServices').value = o.services.map((x) => H.cleanText(x, 80)).filter(Boolean).slice(0, 12).join('\n');
+      toast('جاهزة للمراجعة', 'عدّل الصياغة ثم اضغط «حفظ الصفحة»');
+    } catch (err) { toast('تعذّر اقتراح الصياغة', aiError(err), 'error'); }
+    finally { busy(el, false); }
+  },
   'new-employee': () => employeeModal(), 'edit-employee': (el) => employeeModal(el.dataset.id), 'terminate-employee': (el) => terminateModal(el.dataset.id),
   'new-advance': () => advanceModal(), 'pay-payroll': () => payPayrollModal(),
   'hr-month': (el) => { S.hrMonth = el.dataset.m; render(); },
@@ -2903,6 +3137,9 @@ document.addEventListener('click', (e) => {
   if (fn) { try { fn(el, e); } catch (err) { toast('تعذّر تنفيذ العملية', err.message, 'error'); } }
 });
 
+document.addEventListener('keydown', (e) => {
+  if (e.target.id === 'aiInput' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#aiForm')?.requestSubmit(); }
+});
 document.addEventListener('input', (e) => {
   const t = e.target;
   t.closest('.field.invalid')?.classList.remove('invalid');
@@ -2967,6 +3204,14 @@ document.addEventListener('submit', async (e) => {
     return;
   }
   if (f.id === 'payrollForm') { e.preventDefault(); return; }
+  if (f.id === 'publicForm') {
+    e.preventDefault();
+    const v = { tagline: $('#pgTag').value, city: $('#pgCity').value, about: $('#pgAbout').value, services: $('#pgServices').value, projects: $('#pgProjects').value,
+      phone: $('#pgPhone').value, whatsapp: $('#pgWhats').value, email: $('#pgEmail').value, mapUrl: $('#pgMap').value, address: $('#pgAddress').value, published: $('#pgPub').checked };
+    run(f.querySelector('[type=submit]'), () => Services.savePublicPage(v), ['حُفظت الصفحة التعريفية', v.published ? 'منشورة الآن' : 'غير منشورة'], { close: false });
+    return;
+  }
+  if (f.id === 'aiForm') { e.preventDefault(); const t = $('#aiInput'); const q = t.value; t.value = ''; aiAsk(q); return; }
   if (f.id === 'bankForm') { e.preventDefault(); return; }
   if (f.id === 'periodForm') {
     e.preventDefault();

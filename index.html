@@ -363,6 +363,80 @@ details.more[open] summary{margin-bottom:10px}
 fieldset{border:1px solid var(--line);border-radius:12px;padding:8px 14px 10px}
 legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
 
+/* كشف الحساب */
+.bank-up{display:grid;gap:14px;max-width:760px}
+.bank-up .field{max-width:360px;margin:0}
+.drop{display:grid;justify-items:center;gap:6px;text-align:center;padding:34px 18px;border:2px dashed var(--line-2);border-radius:16px;background:var(--surface-2);cursor:pointer;transition:border-color .2s,background .2s}
+.drop .i{width:34px;height:34px;color:var(--brand)}
+.drop b{font-size:16.5px}.drop span{font-size:13.5px;color:var(--muted)}
+.drop:hover,.drop.over,.drop:focus-within{border-color:var(--brand);background:var(--brand-soft)}
+.bank-how{display:grid;gap:6px;padding-inline-start:20px;color:var(--muted);font-size:14px}
+.bank-map{margin:0 0 14px}
+.bank-map .btn{margin-top:4px}
+.bank-errors ul{padding:12px 20px 14px 20px;padding-inline-start:36px;display:grid;gap:4px;color:var(--warn);font-size:13.5px}
+.bank-table td{padding-block:7px}
+.bank-table .select.sm{min-width:190px;height:38px}
+.bank-desc{min-width:220px;max-width:420px;overflow-wrap:anywhere;font-size:14px}
+.bank-table input[type=checkbox]{width:18px;height:18px;accent-color:var(--brand)}
+.row-off td{opacity:.5}
+.row-dup td{background:var(--neutral-soft)}
+.bank-foot{position:sticky;bottom:0;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:14px;padding:12px 16px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+#bankForm>.card+.card,#bankForm>.kpis-card{margin-bottom:14px}
+
+/* الموارد البشرية */
+.pr-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;margin-bottom:14px}
+.pr-bar label{font-weight:700;font-size:14px}
+.pr-bar .input{width:auto;height:40px}
+.grow{flex:1}
+.pr-table td,.pr-table th{padding-inline:8px}
+.pr-table .input.sm{height:36px;width:96px;padding-inline:8px;font-size:14px}
+.pr-table td:first-child{min-width:150px}
+.invalid-input{border-color:var(--bad)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 14%,transparent)}
+.pr-sum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--line)}
+.pr-sum>div{display:grid;gap:2px;padding:14px 18px}
+.pr-sum>div+div{border-inline-start:1px solid var(--line)}
+.pr-sum b{font-size:17px}
+.pr-sum .grand{background:var(--accent-soft)}.pr-sum .grand b{color:var(--brand);font-size:19px}
+.pr-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between;padding:12px 18px;border-top:1px solid var(--line);background:var(--surface-2);border-radius:0 0 var(--r) var(--r)}
+.pr-actions .actions{display:flex;gap:8px;flex-wrap:wrap}
+.term-box{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.term-box>div{display:grid;gap:2px;padding:10px 14px;background:var(--surface)}
+.term-box .grand{grid-column:1/-1;background:var(--accent-soft)}.term-box .grand b{color:var(--brand);font-size:18px}
+.card.mt{margin-top:18px}
+
+/* المساعد الذكي */
+.ai-wrap{display:grid;grid-template-rows:minmax(0,1fr) auto auto auto;min-height:calc(100vh - 170px);overflow:hidden}
+.ai-log{padding:20px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;max-height:calc(100vh - 330px);min-height:300px}
+.ai-hello{margin:auto;display:grid;justify-items:center;gap:6px;text-align:center;color:var(--muted);max-width:520px}
+.ai-hello .i{width:34px;height:34px;color:var(--brand)}
+.ai-hello b{color:var(--text);font-size:18px}
+.ai-msg{max-width:min(760px,92%);border-radius:16px;padding:12px 16px;border:1px solid var(--line)}
+.ai-msg.me{align-self:flex-start;background:var(--ink-2);color:#eef3f7;border-color:transparent}
+.ai-msg.bot{align-self:flex-end;background:var(--surface-2)}
+.ai-msg.err{border-color:var(--bad);background:var(--bad-soft);color:var(--bad)}
+.ai-who{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;opacity:.75;margin-bottom:4px}
+.ai-who .i{width:15px;height:15px;color:var(--brand)}
+.ai-body{display:grid;gap:6px;font-size:15px;line-height:1.85;overflow-wrap:anywhere}
+.ai-body h4{font-size:15.5px;margin-top:4px}
+.ai-body ul{padding-inline-start:20px;display:grid;gap:3px}
+.ai-chips{display:flex;gap:6px;flex-wrap:wrap;padding:10px 20px;border-top:1px solid var(--line)}
+.ai-chips .chip{height:auto;min-height:34px;padding-block:5px;white-space:normal;text-align:start}
+.ai-compose{display:flex;gap:10px;align-items:flex-end;padding:12px 20px;border-top:1px solid var(--line)}
+.ai-compose .textarea{min-height:52px;flex:1}
+.ai-compose .btn{height:52px}
+.ai-foot{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:10px 20px;background:var(--surface-2);border-top:1px solid var(--line)}
+.ai-set{margin:0 20px 16px}
+/* الفوترة الإلكترونية والصفحة التعريفية */
+.zqr{width:118px;flex:none;background:#fff;padding:6px;border-radius:8px;border:1px solid var(--line)}
+.zqr svg{width:100%;height:auto;display:block}
+.zqr.missing{width:auto;max-width:180px;font-size:12px;color:var(--warn);background:var(--warn-soft);border:0}
+.zatca{display:grid;gap:14px}
+.z-row{display:flex;gap:12px;align-items:flex-start}
+.z-row>div{display:grid;gap:2px}
+.bar-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.login-about{text-align:center;margin-top:10px;font-size:14px}
+.login-about a{color:var(--brand);font-weight:700;text-decoration:none}
+
 /* مستند الفاتورة */
 .doc-top{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-bottom:16px;border-bottom:2px solid var(--navy)}
 .doc-title{font-size:21px;font-weight:800;color:var(--brand)}
@@ -427,6 +501,14 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
   .pline.head,.jline.head{display:none}
   .pline>:first-child,.jline>:first-child{grid-column:1/-1}
   .pline .lt{display:none}
+  .pr-sum{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .pr-sum>div:nth-child(3){border-inline-start:0}
+  .pr-sum>div:nth-child(n+3){border-top:1px solid var(--line)}
+  .term-box{grid-template-columns:minmax(0,1fr)}
+  .bank-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .bank-kpis .kpi{padding:14px}.bank-kpis .kpi-value{font-size:19px}
+  .bank-kpis .kpi:nth-child(2){border-top:0;border-inline-start:1px solid var(--line)}
+  .bank-kpis .kpi:nth-child(4){border-inline-start:1px solid var(--line)}
   .plines.exp .pline{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 32px;grid-template-areas:"n n n" "a a a" "q p x"}
   .plines.exp .pline>:nth-child(1){grid-area:n}.plines.exp .pline>:nth-child(2){grid-area:a}.plines.exp .pline>:nth-child(3){grid-area:q}.plines.exp .pline>:nth-child(4){grid-area:p}.plines.exp .pline>:nth-child(6){grid-area:x}
   .seg{width:100%;flex-wrap:nowrap}.seg-opt{flex:1;min-width:0}.seg-opt span{text-align:center;padding-inline:4px;font-size:12.5px;white-space:nowrap}
@@ -499,6 +581,10 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
   <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4.5"/><path d="M20 21a8 8 0 0 0-16 0"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-bank" viewBox="0 0 24 24"><path d="M3 21h18M4 10h16M12 3 3 8v2h18V8z"/><path d="M6 10v8M10 10v8M14 10v8M18 10v8"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+  <symbol id="i-id" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 17a3.5 3.5 0 0 1 7 0M15 9h3M15 13h3"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
 </svg>
 
@@ -525,6 +611,7 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
       <button class="btn btn-primary btn-block" id="loginBtn" type="submit">تسجيل الدخول</button>
     </form>
     <p class="login-foot" id="loginFoot">جارٍ الاتصال…</p>
+    <p class="login-about"><a href="about.html">تعرّف على الشركة ←</a></p>
   </main>
 </div>
 
@@ -566,6 +653,8 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
 <div id="printArea"></div>
 
 <script src="core.js"></script>
+<script src="qrcode.js"></script>
+<script src="bank.js"></script>
 <script src="firebase-config.js"></script>
 <script src="app.js"></script>
 </body>
