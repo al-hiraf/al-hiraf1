@@ -404,6 +404,39 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
 .term-box .grand{grid-column:1/-1;background:var(--accent-soft)}.term-box .grand b{color:var(--brand);font-size:18px}
 .card.mt{margin-top:18px}
 
+/* المساعد الذكي */
+.ai-wrap{display:grid;grid-template-rows:minmax(0,1fr) auto auto auto;min-height:calc(100vh - 170px);overflow:hidden}
+.ai-log{padding:20px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;max-height:calc(100vh - 330px);min-height:300px}
+.ai-hello{margin:auto;display:grid;justify-items:center;gap:6px;text-align:center;color:var(--muted);max-width:520px}
+.ai-hello .i{width:34px;height:34px;color:var(--brand)}
+.ai-hello b{color:var(--text);font-size:18px}
+.ai-msg{max-width:min(760px,92%);border-radius:16px;padding:12px 16px;border:1px solid var(--line)}
+.ai-msg.me{align-self:flex-start;background:var(--ink-2);color:#eef3f7;border-color:transparent}
+.ai-msg.bot{align-self:flex-end;background:var(--surface-2)}
+.ai-msg.err{border-color:var(--bad);background:var(--bad-soft);color:var(--bad)}
+.ai-who{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;opacity:.75;margin-bottom:4px}
+.ai-who .i{width:15px;height:15px;color:var(--brand)}
+.ai-body{display:grid;gap:6px;font-size:15px;line-height:1.85;overflow-wrap:anywhere}
+.ai-body h4{font-size:15.5px;margin-top:4px}
+.ai-body ul{padding-inline-start:20px;display:grid;gap:3px}
+.ai-chips{display:flex;gap:6px;flex-wrap:wrap;padding:10px 20px;border-top:1px solid var(--line)}
+.ai-chips .chip{height:auto;min-height:34px;padding-block:5px;white-space:normal;text-align:start}
+.ai-compose{display:flex;gap:10px;align-items:flex-end;padding:12px 20px;border-top:1px solid var(--line)}
+.ai-compose .textarea{min-height:52px;flex:1}
+.ai-compose .btn{height:52px}
+.ai-foot{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:10px 20px;background:var(--surface-2);border-top:1px solid var(--line)}
+.ai-set{margin:0 20px 16px}
+/* الفوترة الإلكترونية والصفحة التعريفية */
+.zqr{width:118px;flex:none;background:#fff;padding:6px;border-radius:8px;border:1px solid var(--line)}
+.zqr svg{width:100%;height:auto;display:block}
+.zqr.missing{width:auto;max-width:180px;font-size:12px;color:var(--warn);background:var(--warn-soft);border:0}
+.zatca{display:grid;gap:14px}
+.z-row{display:flex;gap:12px;align-items:flex-start}
+.z-row>div{display:grid;gap:2px}
+.bar-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.login-about{text-align:center;margin-top:10px;font-size:14px}
+.login-about a{color:var(--brand);font-weight:700;text-decoration:none}
+
 /* مستند الفاتورة */
 .doc-top{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-bottom:16px;border-bottom:2px solid var(--navy)}
 .doc-title{font-size:21px;font-weight:800;color:var(--brand)}
@@ -551,6 +584,7 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
   <symbol id="i-bank" viewBox="0 0 24 24"><path d="M3 21h18M4 10h16M12 3 3 8v2h18V8z"/><path d="M6 10v8M10 10v8M14 10v8M18 10v8"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
   <symbol id="i-id" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 17a3.5 3.5 0 0 1 7 0M15 9h3M15 13h3"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
 </svg>
 
@@ -577,6 +611,7 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
       <button class="btn btn-primary btn-block" id="loginBtn" type="submit">تسجيل الدخول</button>
     </form>
     <p class="login-foot" id="loginFoot">جارٍ الاتصال…</p>
+    <p class="login-about"><a href="about.html">تعرّف على الشركة ←</a></p>
   </main>
 </div>
 
@@ -618,6 +653,7 @@ legend{font-weight:800;font-size:13.5px;padding-inline:6px;color:var(--brand)}
 <div id="printArea"></div>
 
 <script src="core.js"></script>
+<script src="qrcode.js"></script>
 <script src="bank.js"></script>
 <script src="firebase-config.js"></script>
 <script src="app.js"></script>
