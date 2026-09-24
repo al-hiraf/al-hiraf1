@@ -431,6 +431,53 @@
     return alerts;
   }
 
+  /* ------------------------------------------------------------------
+     12) الموارد البشرية: التأمينات، سطر المسير، نهاية الخدمة
+     ------------------------------------------------------------------ */
+  /** نسب التأمينات بنقاط الأساس (قابلة للتعديل من إعدادات الموارد البشرية) */
+  const GOSI_DEFAULT = { empSaudiBp: 975, erSaudiBp: 1175, erNonSaudiBp: 200, capH: 4500000 };
+  /** الأجر الثابت الشهري = الأساسي + السكن + النقل + البدلات الأخرى */
+  const fixedWageH = (e) => sumInts([e.basicH || 0, e.housingH || 0, e.transportH || 0, e.otherH || 0]);
+  /** حصة الموظف والمنشأة في التأمينات. الوعاء = الأساسي + السكن بحد أقصى capH */
+  function gosiShares(emp, rates = GOSI_DEFAULT) {
+    if (!emp.gosi) return { baseH: 0, empH: 0, erH: 0 };
+    const r = { ...GOSI_DEFAULT, ...rates };
+    const baseH = Math.min((emp.basicH || 0) + (emp.housingH || 0), r.capH);
+    if (emp.isSaudi) return { baseH, empH: mulDivRound(baseH, r.empSaudiBp, 10000), erH: mulDivRound(baseH, r.erSaudiBp, 10000) };
+    return { baseH, empH: 0, erH: mulDivRound(baseH, r.erNonSaudiBp, 10000) };
+  }
+  /**
+   * سطر مسير الرواتب لموظف:
+   *  الإجمالي = الثابت + الإضافي + المكافأة − الغياب (الثابت ÷ 30 × الأيام) − الجزاءات
+   *  الصافي   = الإجمالي − حصة الموظف في التأمينات − قسط السلفة
+   */
+  function payrollLine(emp, v = {}, rates) {
+    const fixedH = fixedWageH(emp);
+    const days = v.absenceDays || 0;
+    if (!Number.isInteger(days) || days < 0 || days > 30) throw new InputError('أيام الغياب من 0 إلى 30');
+    for (const k of ['overtimeH', 'bonusH', 'penaltyH', 'advanceH']) assertInt(v[k] || 0, k);
+    const absenceH = days ? mulDivRound(fixedH, days, 30) : 0;
+    const grossH = fixedH + (v.overtimeH || 0) + (v.bonusH || 0) - absenceH - (v.penaltyH || 0);
+    const g = gosiShares(emp, rates);
+    const advanceH = v.advanceH || 0;
+    return { fixedH, absenceH, grossH, gosiEmpH: g.empH, gosiErH: g.erH, advanceH, netH: grossH - g.empH - advanceH };
+  }
+  /**
+   * مكافأة نهاية الخدمة (نظام العمل السعودي م84 و م85):
+   *  نصف أجر شهر عن كل سنة من السنوات الخمس الأولى، وأجر شهر عن كل سنة بعدها، وتُحسب كسور السنة.
+   *  الاستقالة: أقل من سنتين لا شيء، من 2 إلى 5 ثلث المكافأة، من 5 إلى 10 ثلثاها، 10 فأكثر كاملة.
+   *  reason: 'employer' (إنهاء من المنشأة أو انتهاء العقد) | 'resign' (استقالة) | 'full' (حالات م87)
+   */
+  function endOfService({ wageH, hireDate, endDate, reason = 'employer' }) {
+    assertInt(wageH, 'الأجر');
+    const days = Math.max(0, daysBetween(hireDate, endDate));
+    const first = Math.min(days, 5 * 365), rest = Math.max(days - 5 * 365, 0);
+    const fullH = mulDivRound(wageH, first, 730) + mulDivRound(wageH, rest, 365);
+    let factor = [1, 1];
+    if (reason === 'resign') factor = days < 2 * 365 ? [0, 1] : days < 5 * 365 ? [1, 3] : days < 10 * 365 ? [2, 3] : [1, 1];
+    return { days, fullH, awardH: mulDivRound(fullH, factor[0], factor[1]), factor };
+  }
+
   return {
     MAX_H, VAT_BP, QTY, InputError,
     normalizeDigits, parseMoney, parseQty, parseInteger, parseDate, isISODate, isMonth, cleanText,
@@ -442,5 +489,6 @@
     emptyStock, stockIn, stockOut, unitCostH,
     monthIndex, monthlyDepreciation, depreciationSchedule,
     csvMoney, toCSV, computeAlerts,
+    GOSI_DEFAULT, fixedWageH, gosiShares, payrollLine, endOfService,
   };
 });

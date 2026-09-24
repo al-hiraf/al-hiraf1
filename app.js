@@ -62,8 +62,9 @@ const Q = (m) => `<span class="num">${H.fmtQty(m || 0)}</span>`;
 const OWNER = '1'; // مالك النظام: لا يُوقف ولا تُسحب صلاحياته
 const PERM_GROUPS = [
   ['المبيعات', [['customer.write', 'إضافة وتعديل العملاء'], ['invoice.write', 'إنشاء مسودات الفواتير'], ['invoice.issue', 'إصدار الفواتير'], ['invoice.void', 'إلغاء فاتورة مُصدرة'], ['payment.create', 'تسجيل سندات القبض'], ['payment.reverse', 'عكس سندات القبض']]],
-  ['المحاسبة', [['journal.create', 'إنشاء قيود يدوية'], ['journal.post', 'اعتماد وترحيل القيود'], ['journal.reverse', 'عكس القيود المرحّلة'], ['accounts.write', 'إضافة حسابات لدليل الحسابات']]],
+  ['المحاسبة', [['journal.create', 'إنشاء قيود يدوية'], ['journal.post', 'اعتماد وترحيل القيود'], ['journal.reverse', 'عكس القيود المرحّلة'], ['bank.import', 'استيراد كشف الحساب'], ['accounts.write', 'إضافة حسابات لدليل الحسابات']]],
   ['المشتريات والأصول', [['inventory.write', 'فواتير المشتريات والمصروفات'], ['asset.write', 'تسجيل الأصول الثابتة'], ['dep.run', 'احتساب الإهلاك الشهري']]],
+  ['الموارد البشرية', [['hr.manage', 'الموظفون والسلف ونهاية الخدمة'], ['payroll.run', 'إعداد مسير الرواتب واعتماده وصرفه']]],
   ['الرقابة والإدارة', [['reports.export', 'تصدير وطباعة التقارير'], ['audit.view', 'عرض سجل المراجعة'], ['settings.write', 'تعديل بيانات المنشأة'], ['users.manage', 'إدارة المستخدمين والصلاحيات']]],
 ];
 const ALL_PERMS = PERM_GROUPS.flatMap((g) => g[1].map((p) => p[0]));
@@ -71,9 +72,10 @@ const PERM_LABEL = Object.fromEntries(PERM_GROUPS.flatMap((g) => g[1]));
 const ROLES = {
   admin: { label: 'مدير النظام', perms: ALL_PERMS },
   cfo: { label: 'المدير المالي', perms: ALL_PERMS.filter((p) => p !== 'users.manage') },
-  accountant: { label: 'محاسب', perms: ['customer.write', 'invoice.write', 'invoice.issue', 'payment.create', 'journal.create', 'inventory.write', 'asset.write', 'dep.run', 'reports.export'] },
+  accountant: { label: 'محاسب', perms: ['customer.write', 'invoice.write', 'invoice.issue', 'payment.create', 'journal.create', 'bank.import', 'inventory.write', 'asset.write', 'dep.run', 'hr.manage', 'payroll.run', 'reports.export'] },
   auditor: { label: 'مراجع', perms: ['audit.view', 'reports.export'] },
   sales: { label: 'مبيعات', perms: ['customer.write', 'invoice.write', 'invoice.issue', 'payment.create'] },
+  hr: { label: 'موارد بشرية', perms: ['hr.manage', 'payroll.run'] },
   viewer: { label: 'مشاهدة فقط', perms: [] },
   custom: { label: 'مخصص', perms: null },
 };
@@ -105,29 +107,33 @@ const ACC = {
   cash: 'acc-1100', bank: 'acc-1200', ar: 'acc-1300', inv: 'acc-1400', vatIn: 'acc-1500', fa: 'acc-1600', accDep: 'acc-1690',
   ap: 'acc-2100', vatOut: 'acc-2200', capital: 'acc-3100', sales: 'acc-4100', services: 'acc-4200', cogs: 'acc-5100', depExp: 'acc-5500',
   materials: 'acc-5600', general: 'acc-5700',
+  advances: 'acc-1350', salPay: 'acc-2300', gosiPay: 'acc-2400', salaries: 'acc-5200', gosiExp: 'acc-5210', eosExp: 'acc-5230',
 };
 const DEFAULT_ACCOUNTS = [
   ['1100', 'النقدية في الصندوق', 'Assets', { cash: true }], ['1200', 'البنك', 'Assets', { cash: true }],
-  ['1300', 'العملاء (الذمم المدينة)', 'Assets', { control: 'ar' }], ['1400', 'المخزون', 'Assets', { control: 'inventory' }],
+  ['1300', 'العملاء (الذمم المدينة)', 'Assets', { control: 'ar' }], ['1350', 'سلف الموظفين', 'Assets', {}], ['1400', 'المخزون', 'Assets', { control: 'inventory' }],
   ['1500', 'ضريبة القيمة المضافة — مدخلات', 'Assets', {}], ['1600', 'الأصول الثابتة', 'Assets', {}],
   ['1690', 'مجمع الإهلاك', 'Assets', { contra: true }],
   ['2100', 'الموردون (الذمم الدائنة)', 'Liabilities', {}], ['2200', 'ضريبة القيمة المضافة — مخرجات', 'Liabilities', {}],
+  ['2300', 'رواتب مستحقة', 'Liabilities', {}], ['2400', 'التأمينات الاجتماعية المستحقة', 'Liabilities', {}],
   ['3100', 'رأس المال', 'Equity', {}],
   ['4100', 'إيرادات المبيعات', 'Revenue', {}], ['4200', 'إيرادات الخدمات والمقاولات', 'Revenue', {}],
-  ['5100', 'تكلفة المبيعات', 'Expenses', {}], ['5200', 'الرواتب والأجور', 'Expenses', {}], ['5300', 'الإيجار', 'Expenses', {}],
+  ['5100', 'تكلفة المبيعات', 'Expenses', {}], ['5200', 'الرواتب والأجور', 'Expenses', {}], ['5210', 'حصة المنشأة في التأمينات', 'Expenses', {}], ['5230', 'مكافأة نهاية الخدمة', 'Expenses', {}], ['5300', 'الإيجار', 'Expenses', {}],
   ['5400', 'الكهرباء والمياه', 'Expenses', {}], ['5500', 'مصروف الإهلاك', 'Expenses', {}],
   ['5600', 'مواد ومشتريات المشاريع', 'Expenses', {}], ['5700', 'مصروفات عامة ونثرية', 'Expenses', {}],
 ];
 const ACC_TYPES = { Assets: 'الأصول', Liabilities: 'الخصوم', Equity: 'حقوق الملكية', Revenue: 'الإيرادات', Expenses: 'المصروفات' };
 const PAY_METHODS = { cash: 'نقداً', bank_transfer: 'تحويل بنكي', card: 'بطاقة / مدى', check: 'شيك' };
-const SOURCE_LABEL = { manual: 'يدوي', invoice: 'فاتورة', payment: 'سند قبض', purchase: 'مشتريات', asset: 'أصل ثابت', depreciation: 'إهلاك', void: 'إلغاء فاتورة', reversal: 'قيد عكسي' };
+const SOURCE_LABEL = { manual: 'يدوي', bank: 'كشف الحساب', payroll: 'مسير الرواتب', advance: 'سلفة موظف', eos: 'نهاية الخدمة', invoice: 'فاتورة', payment: 'سند قبض', purchase: 'مشتريات', asset: 'أصل ثابت', depreciation: 'إهلاك', void: 'إلغاء فاتورة', reversal: 'قيد عكسي' };
 const J_STATUS = { draft: ['بانتظار الاعتماد', 'warn'], posted: ['مرحّل', 'ok'], reversed: ['معكوس', 'neutral'], cancelled: ['ملغى', 'neutral'] };
 const INV_STATUS = { draft: ['مسودة', 'neutral'], issued: ['مُصدرة', 'info'], partial: ['مدفوعة جزئياً', 'info'], dueSoon: ['تستحق قريباً', 'warn'], overdue: ['متأخرة', 'bad'], paid: ['مدفوعة', 'ok'], void: ['ملغاة', 'neutral'], cancelled: ['مسودة ملغاة', 'neutral'] };
 const pill = (map, key) => { const [l, c] = map[key] || [key, 'neutral']; return `<span class="pill ${c}">${esc(l)}</span>`; };
 const MAX_GOODS_LINES = 6; // حد أصناف المخزون في المستند الواحد (حدود قواعد Firestore)
 
 const SERVER_TIME = '__SERVER_TIME__';
-const COLLS = ['accounts', 'customers', 'items', 'stockMoves', 'purchases', 'invoices', 'payments', 'journals', 'assets', 'depRuns', 'users', 'settings', 'audit'];
+const COLLS = ['accounts', 'customers', 'items', 'stockMoves', 'purchases', 'invoices', 'payments', 'journals', 'assets', 'depRuns', 'users', 'settings', 'audit', 'employees', 'advances', 'payrolls'];
+const HR_COLLS = new Set(['employees', 'advances', 'payrolls']); // تُقرأ فقط لمن يملك صلاحية الموارد البشرية أو المراجعة
+const canHR = () => can('hr.manage') || can('payroll.run') || can('audit.view');
 
 /* =====================================================================
    3-أ) طبقة البيانات: Firebase
@@ -200,11 +206,11 @@ const CloudDB = {
     return out;
   },
 
-  subscribe(onData, onChange, { withAudit }) {
+  subscribe(onData, onChange, { withAudit, withHR }) {
     const { collection, onSnapshot, query, orderBy, limit } = this.fb;
     const st = Object.fromEntries(COLLS.map((c) => [c, {}]));
     const ready = new Set();
-    const wanted = COLLS.filter((c) => c !== 'audit' || withAudit);
+    const wanted = COLLS.filter((c) => (c !== 'audit' || withAudit) && (!HR_COLLS.has(c) || withHR));
     wanted.forEach((c) => {
       const ref = c === 'audit' ? query(collection(this.db, 'audit'), orderBy('at', 'desc'), limit(1000)) : collection(this.db, c);
       this.unsubs.push(onSnapshot(ref, (snap) => {
@@ -307,7 +313,7 @@ function fbError(e) {
    الحالة العامة
    ===================================================================== */
 function emptyData() {
-  return { accounts: [], customers: [], items: [], stockMoves: [], purchases: [], catalog: [], invoices: [], payments: [], journals: [], assets: [], depRuns: [], users: [], audit: [], company: {}, counters: {}, accBal: new Map(), alerts: [], recon: {} };
+  return { accounts: [], customers: [], items: [], stockMoves: [], purchases: [], catalog: [], employees: [], advances: [], payrolls: [], hr: { ...H.GOSI_DEFAULT }, invoices: [], payments: [], journals: [], assets: [], depRuns: [], users: [], audit: [], company: {}, counters: {}, accBal: new Map(), alerts: [], recon: {} };
 }
 const S = {
   db: null,
@@ -315,7 +321,7 @@ const S = {
   entering: null,      // وعد الدخول الجاري (يمنع التكرار)
   weakPassword: false,
   section: 'dashboard',
-  tabs: { reports: 'income', inventory: 'purchases', journal: 'all', invoices: 'all', customers: 'active' },
+  tabs: { hr: 'employees', reports: 'income', inventory: 'purchases', journal: 'all', invoices: 'all', customers: 'active' },
   q: {},
   period: { from: firstOfYear(), to: todayISO() },
   auditFilter: { user: '', entity: '' },
@@ -338,18 +344,62 @@ async function readCounters(t) { const c = await t.get('settings', 'counters'); 
 function bump(counters, key) { counters[key] = (counters[key] || 0) + 1; return counters[key]; }
 
 /** ينشئ قيداً بعد التحقق من اتزانه — لا يُكتب أي قيد غير متزن */
-function writeJournal(t, counters, { date, memo, lines, source, sourceId = '', status = 'posted' }, meta) {
+function writeJournal(t, counters, { date, memo, lines, source, sourceId = '', status = 'posted', id: fixedId = '', extra = null }, meta) {
   const clean = lines.filter((l) => (l.debitH || 0) > 0 || (l.creditH || 0) > 0)
     .map((l) => ({ accountId: l.accountId, debitH: l.debitH || 0, creditH: l.creditH || 0, memo: H.cleanText(l.memo || '', 120) }));
   const v = H.validateJournal(clean);
   if (!v.ok) throw new H.InputError(v.errors[0]);
   if (!H.isISODate(date)) throw new H.InputError('تاريخ القيد غير صالح');
-  const id = t.newId('journals');
+  const id = fixedId || t.newId('journals');
   const no = 'JE-' + pad(bump(counters, 'journal'), 5);
   const doc = { no, date, memo: H.cleanText(memo, 200), lines: clean, totalDebitH: v.totalDebitH, totalCreditH: v.totalCreditH, status, source, sourceId: String(sourceId), createdBy: S.user.username, createdAt: nowISO(), auditId: meta.auditId };
   if (status === 'posted') Object.assign(doc, { postedBy: S.user.username, postedAt: nowISO() });
+  if (extra) Object.assign(doc, extra);
   t.set('journals', id, doc);
   return { id, no };
+}
+/* ---------- مساعدات الموارد البشرية ---------- */
+function hrAccountsReady() {
+  const miss = [ACC.advances, ACC.salPay, ACC.gosiPay, ACC.salaries, ACC.gosiExp, ACC.eosExp].filter((id) => !S.data.accounts.some((a) => a.id === id));
+  if (miss.length) throw new H.InputError('حسابات الرواتب لم تُضف لدليل الحسابات بعد؛ يكفي أن يدخل مدير النظام مرة واحدة لتُضاف تلقائياً');
+}
+/** يوزّع مبلغ الاستقطاع على سلف الموظف المفتوحة، الأقدم أولاً */
+function allocateAdvances(empId, totalH) {
+  if (!totalH) return [];
+  const open = S.data.advances.filter((a) => a.employeeId === empId && a.remainingH > 0).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.no).localeCompare(String(b.no)));
+  const out = []; let left = totalH;
+  for (const a of open) { if (!left) break; const x = Math.min(left, a.remainingH); out.push({ id: a.id, no: a.no, amountH: x }); left -= x; }
+  if (left > 0) throw new H.InputError('قسط السلفة أكبر من المتبقي على الموظف');
+  return out;
+}
+/** يتحقق من سطر المسير ويعيد القيم المحسوبة */
+function payrollCheck(l) {
+  const c = H.payrollLine(l, l, S.data.hr);
+  if (c.grossH < 0) throw new H.InputError(`${l.name}: الخصومات أكبر من الراتب`);
+  if (c.netH < 0) throw new H.InputError(`${l.name}: الصافي بالسالب؛ خفّض قسط السلفة أو الجزاءات`);
+  const open = H.sumInts(S.data.advances.filter((a) => a.employeeId === l.employeeId).map((a) => a.remainingH));
+  if ((l.advanceH || 0) > open) throw new H.InputError(`${l.name}: قسط السلفة أكبر من المتبقي (${H.fmtMoney(open)})`);
+  return c;
+}
+/** أسطر المسير: لقطة من بيانات الموظف وقت الإعداد، مع الإضافي والغياب المُدخل سابقاً */
+function buildPayrollLines(month, prev) {
+  const start = month + '-01', end = monthEnd(month);
+  return S.data.employees.filter((e) => e.status === 'active' && e.hireDate <= end).map((e) => {
+    const p = prev.find((l) => l.employeeId === e.id);
+    const defAbs = e.hireDate > start ? Math.min(30, Number(e.hireDate.slice(8)) - 1) : 0; // مباشرة خلال الشهر
+    const defAdv = H.sumInts(S.data.advances.filter((a) => a.employeeId === e.id && a.remainingH > 0).map((a) => Math.min(a.installmentH, a.remainingH)));
+    return { employeeId: e.id, code: e.code, name: e.name, jobTitle: e.jobTitle || '', site: e.site || '', isSaudi: !!e.isSaudi, gosi: !!e.gosi, iban: e.iban || '', bankName: e.bankName || '',
+      basicH: e.basicH || 0, housingH: e.housingH || 0, transportH: e.transportH || 0, otherH: e.otherH || 0,
+      overtimeH: p?.overtimeH || 0, bonusH: p?.bonusH || 0, absenceDays: p ? p.absenceDays || 0 : defAbs, penaltyH: p?.penaltyH || 0, advanceH: p ? p.advanceH || 0 : defAdv };
+  });
+}
+/** بصمة ثابتة قصيرة لمعرّف المستند (cyrb53) — نفس العملية تعطي نفس المعرّف دائماً */
+function bankDocId(str) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(36).padStart(7, '0') + (h1 >>> 0).toString(36).padStart(7, '0') + str.length.toString(36);
 }
 const stockState = (it) => ({ qtyM: it.qtyM || 0, valueH: it.valueH || 0, layers: it.layers || [] });
 const stockPatch = (it, meta) => ({ qtyM: it.qtyM, valueH: it.valueH, layers: it.layers, ...meta });
@@ -367,14 +417,7 @@ const Services = {
         t.set('users', u.username, { name: u.name, role: u.role, perms: ROLES[u.role].perms, active: true, deleted: false, createdBy: S.user.username, createdAt: nowISO(), ...meta });
       }
     });
-    await S.db.tx(async (t) => {
-      const accs = {};
-      for (const [n] of DEFAULT_ACCOUNTS) accs[n] = await t.get('accounts', 'acc-' + n);
-      const meta = audit(t, 'create', 'system', 'bootstrap-accounts', 'تهيئة النظام: دليل الحسابات');
-      for (const [n, name, type, flags] of DEFAULT_ACCOUNTS) if (!accs[n]) {
-        t.set('accounts', 'acc-' + n, { number: n, name, type, ...flags, system: true, archived: false, createdAt: nowISO(), ...meta });
-      }
-    });
+    await createDefaultAccounts(DEFAULT_ACCOUNTS, 'تهيئة النظام: دليل الحسابات');
   },
 
   /* ---------- المستخدمون ---------- */
@@ -674,7 +717,7 @@ const Services = {
     await S.db.tx(async (t) => {
       const j = await t.get('journals', id);
       if (!j || j.status !== 'posted') throw new H.InputError('يمكن عكس القيود المرحّلة فقط');
-      if (j.source !== 'manual') throw new H.InputError('هذا قيد آلي: ألغِ المستند الأصلي (الفاتورة أو السند)');
+      if (!['manual', 'bank'].includes(j.source)) throw new H.InputError('هذا قيد آلي: ألغِ المستند الأصلي (الفاتورة أو السند)');
       const counters = await readCounters(t);
       const meta = audit(t, 'reverse', 'journal', id, `عكس القيد ${j.no}: ${reason}`);
       const r = writeJournal(t, counters, { date: todayISO(), memo: `عكس القيد ${j.no}: ${reason}`, source: 'reversal', sourceId: id, lines: H.reverseLines(j.lines) }, meta);
@@ -779,6 +822,253 @@ const Services = {
     });
   },
 
+  /**
+   * استيراد عمليات كشف الحساب البنكي (بعد مراجعتها في الشاشة).
+   *  - سحب مصنّف «مصروفات» ← فاتورة مشتريات (تظهر في المشتريات والأصناف والإقرار الضريبي)
+   *  - أي عملية أخرى ← قيد مرحّل: السحب من حـ/ التصنيف إلى حـ/ البنك، والإيداع من حـ/ البنك إلى حـ/ التصنيف
+   *  - معرّف كل مستند مشتق من بصمة العملية، فالعملية نفسها لا تُرحّل مرتين ولو رُفع الكشف مرتين
+   *  - الترحيل على دفعات صغيرة لأن قواعد Firestore تحد عدد الفحوص في الطلب الواحد
+   */
+  async importBank({ bankAccountId, rows, fileName }, onProgress) {
+    need('bank.import');
+    const bank = S.data.accounts.find((a) => a.id === bankAccountId);
+    if (!bank || !bank.cash) throw new H.InputError('اختر حساب البنك أو الصندوق');
+    const blocked = new Set([bankAccountId, ACC.ar, ACC.inv, ACC.fa, ACC.accDep]);
+    const accs = new Map(S.data.accounts.map((a) => [a.id, a]));
+    const file = H.cleanText(fileName, 80) || 'كشف الحساب';
+    const clean = rows.map((r, k) => {
+      const at = `العملية ${k + 1}`;
+      if (!H.isISODate(r.date)) throw new H.InputError(`${at}: التاريخ غير صالح`);
+      if (!['in', 'out'].includes(r.dir)) throw new H.InputError(`${at}: نوع العملية غير صالح`);
+      if (!Number.isSafeInteger(r.amountH) || r.amountH <= 0 || r.amountH > H.MAX_H) throw new H.InputError(`${at}: المبلغ غير صالح`);
+      const acc = accs.get(r.accountId);
+      if (!acc || acc.archived || blocked.has(acc.id)) throw new H.InputError(`${at}: اختر تصنيفاً صالحاً`);
+      const desc = H.cleanText(r.desc, 200) || 'عملية بنكية';
+      const asPurchase = r.dir === 'out' && acc.type === 'Expenses';
+      return { ...r, desc, acc, asPurchase, vat: asPurchase && !!r.vat, key: bankDocId(bankAccountId + '|' + String(r.ref || '')) };
+    });
+    if (!clean.length) throw new H.InputError('اختر عملية واحدة على الأقل');
+    const CHUNK = 3;
+    let posted = 0, dup = 0;
+    for (let i = 0; i < clean.length; i += CHUNK) {
+      const part = clean.slice(i, i + CHUNK);
+      await S.db.tx(async (t) => {
+        // كل القراءات أولاً (شرط المعاملات)
+        const fresh = [];
+        for (const r of part) {
+          const exists = r.asPurchase ? await t.get('purchases', 'bk' + r.key) : await t.get('journals', 'bk' + r.key);
+          if (exists) dup++; else fresh.push(r);
+        }
+        if (!fresh.length) return;
+        const counters = await readCounters(t);
+        const sum = H.sumInts(fresh.map((r) => r.amountH));
+        const meta = audit(t, 'import', 'bank', bankAccountId, `استيراد ${fresh.length} عملية من «${file}» (${bank.name}) بإجمالي ${H.fmtMoney(sum)}`);
+        for (const r of fresh) {
+          const extra = { bankRef: r.ref, bankFile: file };
+          if (r.asPurchase) {
+            const { netH, vatH } = r.vat ? H.splitGross(r.amountH) : { netH: r.amountH, vatH: 0 };
+            const pid = 'bk' + r.key;
+            const no = 'PU-' + pad(bump(counters, 'purchase'), 5);
+            const j = writeJournal(t, counters, { date: r.date, memo: `مشتريات ${no} — ${r.desc}`, source: 'purchase', sourceId: pid, id: 'bj' + r.key, extra,
+              lines: [{ accountId: r.acc.id, debitH: netH }, { accountId: ACC.vatIn, debitH: vatH }, { accountId: bankAccountId, creditH: r.amountH }] }, meta);
+            t.set('purchases', pid, { no, kind: 'expense', source: 'bank', ...extra, supplier: r.desc.slice(0, 120), supplierVat: '', ref: '', date: r.date, payAccountId: bankAccountId, vatMode: r.vat ? 'incl' : 'none',
+              lines: [{ name: r.desc.slice(0, 100), accountId: r.acc.id, qtyM: 1000, priceH: r.amountH, netH, vatH }], netH, vatH, totalH: r.amountH, journalIds: [j.id], createdBy: S.user.username, createdAt: nowISO(), ...meta });
+          } else {
+            const lines = r.dir === 'out'
+              ? [{ accountId: r.acc.id, debitH: r.amountH, memo: r.desc }, { accountId: bankAccountId, creditH: r.amountH }]
+              : [{ accountId: bankAccountId, debitH: r.amountH }, { accountId: r.acc.id, creditH: r.amountH, memo: r.desc }];
+            writeJournal(t, counters, { date: r.date, memo: r.desc, source: 'bank', sourceId: bankAccountId, id: 'bk' + r.key, extra, lines }, meta);
+          }
+        }
+        t.set('settings', 'counters', { ...counters, auditId: meta.auditId });
+        posted += fresh.length;
+      });
+      onProgress?.(Math.min(i + CHUNK, clean.length), clean.length);
+    }
+    return { posted, dup };
+  },
+
+  /* ---------- الموارد البشرية ---------- */
+  async saveEmployee(id, f) {
+    need('hr.manage');
+    const name = H.cleanText(f.name, 100); if (!name) throw new H.InputError('اسم الموظف مطلوب');
+    if (!H.isISODate(f.hireDate)) throw new H.InputError('تاريخ المباشرة غير صالح');
+    for (const [k, l] of [['basicH', 'الراتب الأساسي'], ['housingH', 'بدل السكن'], ['transportH', 'بدل النقل'], ['otherH', 'البدلات الأخرى']]) {
+      if (!Number.isSafeInteger(f[k] || 0) || (f[k] || 0) < 0) throw new H.InputError(`${l} غير صالح`);
+    }
+    if (!(f.basicH > 0)) throw new H.InputError('الراتب الأساسي مطلوب');
+    const iban = String(f.iban || '').toUpperCase().replace(/\s/g, '');
+    if (iban && !/^SA\d{22}$/.test(iban)) throw new H.InputError('الآيبان 24 خانة ويبدأ بـ SA');
+    const idNumber = H.normalizeDigits(f.idNumber || '');
+    if (idNumber && !/^[12]\d{9}$/.test(idNumber)) throw new H.InputError('رقم الهوية أو الإقامة 10 أرقام يبدأ بـ 1 أو 2');
+    const phone = H.normalizeDigits(f.phone || '');
+    if (phone && !/^(05\d{8}|\+?9665\d{8})$/.test(phone)) throw new H.InputError('رقم الجوال غير صحيح (مثال: 0501234567)');
+    const data = { name, jobTitle: H.cleanText(f.jobTitle, 60), site: H.cleanText(f.site, 60), isSaudi: !!f.isSaudi, nationality: H.cleanText(f.nationality, 30),
+      idNumber, hireDate: f.hireDate, basicH: f.basicH, housingH: f.housingH || 0, transportH: f.transportH || 0, otherH: f.otherH || 0,
+      gosi: !!f.gosi, bankName: H.cleanText(f.bankName, 40), iban, phone };
+    const wage = H.fmtMoney(H.fixedWageH(data));
+    return S.db.tx(async (t) => {
+      if (id) {
+        const cur = await t.get('employees', id);
+        if (!cur) throw new H.InputError('الموظف غير موجود');
+        if (cur.status !== 'active') throw new H.InputError('لا تُعدّل بيانات موظف انتهت خدمته');
+        const meta = audit(t, 'update', 'employee', id, `تعديل بيانات الموظف ${cur.code} — ${name} (الأجر الثابت ${wage})`);
+        t.update('employees', id, { ...data, ...meta });
+        return cur.code;
+      }
+      const counters = await readCounters(t);
+      const code = 'EMP-' + pad(bump(counters, 'employee'), 3);
+      const eid = t.newId('employees');
+      const meta = audit(t, 'create', 'employee', eid, `إضافة الموظف ${code} — ${name} (الأجر الثابت ${wage})`);
+      t.set('employees', eid, { ...data, code, status: 'active', createdBy: S.user.username, createdAt: nowISO(), ...meta });
+      t.set('settings', 'counters', { ...counters, auditId: meta.auditId });
+      return code;
+    });
+  },
+  /** صرف سلفة: من حـ/ سلف الموظفين إلى حـ/ الصندوق أو البنك. تُسترد أقساطاً من المسير */
+  async createAdvance(f) {
+    need('hr.manage');
+    hrAccountsReady();
+    if (![ACC.cash, ACC.bank].includes(f.payAccountId)) throw new H.InputError('اختر الصندوق أو البنك');
+    if (!H.isISODate(f.date)) throw new H.InputError('التاريخ غير صالح');
+    if (!Number.isSafeInteger(f.amountH) || f.amountH <= 0) throw new H.InputError('مبلغ السلفة غير صالح');
+    if (!Number.isInteger(f.installments) || f.installments < 1 || f.installments > 36) throw new H.InputError('عدد الأقساط من 1 إلى 36');
+    const emp = S.data.employees.find((e) => e.id === f.employeeId && e.status === 'active');
+    if (!emp) throw new H.InputError('اختر الموظف');
+    return S.db.tx(async (t) => {
+      const counters = await readCounters(t);
+      const no = 'ADV-' + pad(bump(counters, 'advance'), 5);
+      const aid = t.newId('advances');
+      const meta = audit(t, 'create', 'advance', aid, `سلفة ${no} للموظف ${emp.name} بمبلغ ${H.fmtMoney(f.amountH)} على ${f.installments} قسط`);
+      const j = writeJournal(t, counters, { date: f.date, memo: `سلفة ${no} — ${emp.name}`, source: 'advance', sourceId: aid,
+        lines: [{ accountId: ACC.advances, debitH: f.amountH }, { accountId: f.payAccountId, creditH: f.amountH }] }, meta);
+      t.set('advances', aid, { no, employeeId: emp.id, empName: emp.name, empCode: emp.code, date: f.date, amountH: f.amountH, installments: f.installments,
+        installmentH: Math.ceil(f.amountH / f.installments), note: H.cleanText(f.note, 120), payAccountId: f.payAccountId, journalIds: [j.id],
+        createdBy: S.user.username, createdAt: nowISO(), ...meta });
+      t.set('settings', 'counters', { ...counters, auditId: meta.auditId });
+      return no;
+    });
+  },
+  /** إعداد (أو إعادة إعداد) مسودة مسير الشهر من الموظفين النشطين، مع الاحتفاظ بما أُدخل سابقاً */
+  async preparePayroll(month) {
+    need('payroll.run');
+    if (!H.isMonth(month)) throw new H.InputError('الشهر غير صالح');
+    const cur0 = S.data.payrolls.find((p) => p.id === month);
+    const lines = buildPayrollLines(month, cur0?.lines || []);
+    if (!lines.length) throw new H.InputError('لا يوجد موظفون نشطون باشروا قبل نهاية هذا الشهر');
+    return S.db.tx(async (t) => {
+      const cur = await t.get('payrolls', month);
+      if (cur && cur.status !== 'draft') throw new H.InputError('مسير هذا الشهر معتمد بالفعل');
+      const meta = audit(t, cur ? 'update' : 'create', 'payroll', month, `${cur ? 'إعادة إعداد' : 'إعداد'} مسير رواتب ${fmtMonth(month)} (${lines.length} موظف)`);
+      if (cur) t.update('payrolls', month, { lines, ...meta });
+      else t.set('payrolls', month, { month, status: 'draft', lines, createdBy: S.user.username, createdAt: nowISO(), ...meta });
+    });
+  },
+  async savePayroll(month, edits) {
+    need('payroll.run');
+    const cur0 = S.data.payrolls.find((p) => p.id === month);
+    if (!cur0 || cur0.status !== 'draft') throw new H.InputError('المسير ليس مسودة');
+    const lines = cur0.lines.map((l) => ({ ...l, ...(edits[l.employeeId] || {}) }));
+    lines.forEach((l) => payrollCheck(l));
+    await S.db.tx(async (t) => {
+      const cur = await t.get('payrolls', month);
+      if (!cur || cur.status !== 'draft') throw new H.InputError('المسير ليس مسودة');
+      const meta = audit(t, 'update', 'payroll', month, `تعديل مسودة مسير ${fmtMonth(month)}`);
+      t.update('payrolls', month, { lines, ...meta });
+    });
+  },
+  /**
+   * اعتماد المسير — القيد:
+   *  من حـ/ الرواتب والأجور (الإجمالي) + حـ/ حصة المنشأة في التأمينات
+   *  إلى حـ/ التأمينات المستحقة (الحصتان) + حـ/ سلف الموظفين (الأقساط) + حـ/ رواتب مستحقة (الصافي)
+   */
+  async postPayroll(month, edits = null) {
+    need('payroll.run');
+    hrAccountsReady();
+    const p0 = S.data.payrolls.find((p) => p.id === month);
+    if (!p0 || p0.status !== 'draft') throw new H.InputError('المسير ليس مسودة');
+    const lines = p0.lines.map((l0) => { const l = { ...l0, ...((edits || {})[l0.employeeId] || {}) }; const c = payrollCheck(l); return { ...l, ...c, advances: allocateAdvances(l.employeeId, l.advanceH || 0) }; });
+    const tot = (k) => H.sumInts(lines.map((l) => l[k]));
+    const totals = { grossH: tot('grossH'), gosiEmpH: tot('gosiEmpH'), gosiErH: tot('gosiErH'), advanceH: tot('advanceH'), netH: tot('netH') };
+    // قيد الاستحقاق بتاريخ نهاية الشهر، أو بتاريخ اليوم إن اعتُمد المسير قبل انتهاء الشهر
+    const date = monthEnd(month) < todayISO() ? monthEnd(month) : (todayISO() < month + '-01' ? month + '-01' : todayISO());
+    return S.db.tx(async (t) => {
+      const cur = await t.get('payrolls', month);
+      if (!cur || cur.status !== 'draft') throw new H.InputError('المسير ليس مسودة');
+      const counters = await readCounters(t);
+      const meta = audit(t, 'post', 'payroll', month, `اعتماد مسير ${fmtMonth(month)}: ${lines.length} موظف، الإجمالي ${H.fmtMoney(totals.grossH)}، الصافي ${H.fmtMoney(totals.netH)}`);
+      const j = writeJournal(t, counters, { date, memo: `مسير رواتب ${fmtMonth(month)}`, source: 'payroll', sourceId: month, lines: [
+        { accountId: ACC.salaries, debitH: totals.grossH }, { accountId: ACC.gosiExp, debitH: totals.gosiErH },
+        { accountId: ACC.gosiPay, creditH: totals.gosiEmpH + totals.gosiErH }, { accountId: ACC.advances, creditH: totals.advanceH },
+        { accountId: ACC.salPay, creditH: totals.netH }] }, meta);
+      t.update('payrolls', month, { status: 'posted', lines, totals, date, postedBy: S.user.username, postedAt: nowISO(), journalIds: [j.id], ...meta });
+      t.set('settings', 'counters', { ...counters, auditId: meta.auditId });
+      return j.no;
+    });
+  },
+  /** صرف الرواتب: من حـ/ رواتب مستحقة إلى حـ/ البنك أو الصندوق */
+  async payPayroll(month, payAccountId, date) {
+    need('payroll.run');
+    if (![ACC.cash, ACC.bank].includes(payAccountId)) throw new H.InputError('اختر الصندوق أو البنك');
+    if (!H.isISODate(date)) throw new H.InputError('تاريخ الصرف غير صالح');
+    return S.db.tx(async (t) => {
+      const cur = await t.get('payrolls', month);
+      if (!cur || cur.status !== 'posted') throw new H.InputError('يُصرف المسير بعد اعتماده');
+      const counters = await readCounters(t);
+      const meta = audit(t, 'pay', 'payroll', month, `صرف رواتب ${fmtMonth(month)} بمبلغ ${H.fmtMoney(cur.totals.netH)}`);
+      const ids = [...cur.journalIds];
+      if (cur.totals.netH > 0) {
+        const j = writeJournal(t, counters, { date, memo: `صرف رواتب ${fmtMonth(month)}`, source: 'payroll', sourceId: month,
+          lines: [{ accountId: ACC.salPay, debitH: cur.totals.netH }, { accountId: payAccountId, creditH: cur.totals.netH }] }, meta);
+        ids.push(j.id);
+      }
+      t.update('payrolls', month, { status: 'paid', paidBy: S.user.username, paidAt: nowISO(), payAccountId, journalIds: ids, ...meta });
+      t.set('settings', 'counters', { ...counters, auditId: meta.auditId });
+    });
+  },
+  /** إنهاء الخدمة: تُحسب المكافأة نظاماً، ويُخصم منها المتبقي من السلف، والباقي يُصرف أو يُسجل مستحقاً */
+  async terminateEmployee(id, f) {
+    need('hr.manage');
+    hrAccountsReady();
+    if (!['employer', 'resign', 'full'].includes(f.reason)) throw new H.InputError('اختر سبب انتهاء الخدمة');
+    if (![ACC.cash, ACC.bank, ACC.salPay].includes(f.payAccountId)) throw new H.InputError('اختر طريقة الصرف');
+    if (!H.isISODate(f.date)) throw new H.InputError('تاريخ انتهاء الخدمة غير صالح');
+    const emp = S.data.employees.find((e) => e.id === id && e.status === 'active');
+    if (!emp) throw new H.InputError('الموظف غير موجود أو انتهت خدمته');
+    if (f.date < emp.hireDate) throw new H.InputError('تاريخ الانتهاء قبل تاريخ المباشرة');
+    const eos = H.endOfService({ wageH: H.fixedWageH(emp), hireDate: emp.hireDate, endDate: f.date, reason: f.reason });
+    const open = H.sumInts(S.data.advances.filter((a) => a.employeeId === id).map((a) => a.remainingH));
+    const deductH = Math.min(open, eos.awardH);
+    const allocs = allocateAdvances(id, deductH);
+    const netH = eos.awardH - deductH;
+    const why = { employer: 'إنهاء من المنشأة أو انتهاء العقد', resign: 'استقالة', full: 'حالة مستحقة كاملة (م87)' }[f.reason];
+    return S.db.tx(async (t) => {
+      const cur = await t.get('employees', id);
+      if (!cur || cur.status !== 'active') throw new H.InputError('الموظف غير موجود أو انتهت خدمته');
+      const counters = await readCounters(t);
+      const meta = audit(t, 'terminate', 'employee', id, `إنهاء خدمة ${emp.code} — ${emp.name} (${why}) مكافأة ${H.fmtMoney(eos.awardH)}${deductH ? `، خُصم منها سلف ${H.fmtMoney(deductH)}` : ''}`);
+      const ids = [];
+      if (eos.awardH > 0) {
+        const j = writeJournal(t, counters, { date: f.date, memo: `مكافأة نهاية خدمة — ${emp.name}`, source: 'eos', sourceId: id, lines: [
+          { accountId: ACC.eosExp, debitH: eos.awardH }, { accountId: ACC.advances, creditH: deductH }, { accountId: f.payAccountId, creditH: netH }] }, meta);
+        ids.push(j.id);
+      }
+      t.update('employees', id, { status: 'terminated', termDate: f.date, termReason: f.reason, termNote: H.cleanText(f.note, 200), eosDays: eos.days,
+        eosH: eos.awardH, eosAdvances: allocs, eosNetH: netH, eosPayAccountId: f.payAccountId, journalIds: ids, ...meta });
+      t.set('settings', 'counters', { ...counters, auditId: meta.auditId });
+      return eos.awardH;
+    });
+  },
+  async saveHrSettings(v) {
+    need('hr.manage');
+    for (const k of ['empSaudiBp', 'erSaudiBp', 'erNonSaudiBp']) if (!Number.isInteger(v[k]) || v[k] < 0 || v[k] > 3000) throw new H.InputError('النسبة بين 0% و30%');
+    if (!Number.isSafeInteger(v.capH) || v.capH <= 0) throw new H.InputError('الحد الأعلى للأجر الخاضع غير صالح');
+    await S.db.tx(async (t) => {
+      const meta = audit(t, 'update', 'settings', 'hr', `نسب التأمينات: الموظف السعودي ${v.empSaudiBp / 100}%، المنشأة ${v.erSaudiBp / 100}%، غير السعودي ${v.erNonSaudiBp / 100}%، الحد ${H.fmtMoney(v.capH)}`);
+      t.set('settings', 'hr', { empSaudiBp: v.empSaudiBp, erSaudiBp: v.erSaudiBp, erNonSaudiBp: v.erNonSaudiBp, capH: v.capH, ...meta });
+    });
+  },
+
   /* ---------- الأصول الثابتة والإهلاك ---------- */
   async createAsset(f) {
     need('asset.write');
@@ -878,6 +1168,16 @@ function derive(st) {
   const assets = arr('assets').map((a) => ({ ...a, accumulatedH: accumulated.get(a.id) || 0, bookH: a.costH - (accumulated.get(a.id) || 0) }))
     .sort((a, b) => String(a.no).localeCompare(String(b.no)));
   const auditLog = arr('audit').sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  // الموارد البشرية: المسترد من كل سلفة = أقساط المسيرات المعتمدة + ما خُصم عند نهاية الخدمة
+  const payrolls = arr('payrolls').sort((a, b) => b.id.localeCompare(a.id));
+  const employees = arr('employees').sort((a, b) => String(a.code).localeCompare(String(b.code), 'en', { numeric: true }));
+  const recovered = new Map();
+  const addRec = (id, h) => recovered.set(id, (recovered.get(id) || 0) + (h || 0));
+  payrolls.filter((p) => p.status === 'posted' || p.status === 'paid').forEach((p) => (p.lines || []).forEach((l) => (l.advances || []).forEach((a) => addRec(a.id, a.amountH))));
+  employees.forEach((e) => (e.eosAdvances || []).forEach((a) => addRec(a.id, a.amountH)));
+  const advances = arr('advances').map((a) => { const rec = Math.min(recovered.get(a.id) || 0, a.amountH); return { ...a, recoveredH: rec, remainingH: a.amountH - rec }; })
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.no).localeCompare(String(a.no)));
+  const { id: _hid, auditId: _ha, updatedAt: _hu, updatedBy: _hb, ...hrSet } = (st.settings || {}).hr || {};
   const totals = H.accountTotals(journals, { to: today });
   const accBal = new Map(accounts.map((a) => [a.id, H.naturalBalance(a, totals)]));
   const alerts = H.computeAlerts({ accounts, journals, invoices, items, today });
@@ -889,10 +1189,11 @@ function derive(st) {
     invGlH: accBal.get(ACC.inv) || 0,
     faSubH: H.sumInts(assets.map((a) => a.costH)), faGlH: accBal.get(ACC.fa) || 0,
     depSubH: H.sumInts(depRuns.map((r) => r.totalH)), depGlH: 0 - (accBal.get(ACC.accDep) || 0),
+    advSubH: H.sumInts(advances.map((a) => a.remainingH)), advGlH: accBal.get(ACC.advances) || 0,
   };
   const catalog = purchaseCatalog(purchases);
   return {
-    accounts, journals, customers, items, stockMoves, purchases, catalog, invoices, payments, assets, depRuns, users, audit: auditLog,
+    accounts, journals, customers, items, stockMoves, purchases, catalog, employees, advances, payrolls, hr: { ...H.GOSI_DEFAULT, ...hrSet }, invoices, payments, assets, depRuns, users, audit: auditLog,
     company: (st.settings || {}).company || {}, counters: (st.settings || {}).counters || {}, accBal, alerts, recon,
   };
 }
@@ -1002,8 +1303,8 @@ function enterApp() {
 }
 function startSync() {
   S.db.stop();
-  S.auditSub = can('audit.view');
-  S.db.subscribe(onData, onRemoteChange, { withAudit: S.auditSub });
+  S.auditSub = can('audit.view'); S.hrSub = canHR();
+  S.db.subscribe(onData, onRemoteChange, { withAudit: S.auditSub, withHR: S.hrSub });
 }
 function updateMe() {
   $('#meName').textContent = S.user.name;
@@ -1012,7 +1313,7 @@ function updateMe() {
 }
 function leaveApp() {
   S.db.stop(); closeModal();
-  S.data = emptyData(); S.loaded = false;
+  S.data = emptyData(); S.loaded = false; S.bank = null;
   showLogin();
 }
 async function logout() {
@@ -1031,12 +1332,25 @@ function onData(raw) {
   if (!me || me.active === false || me.deleted) { toast('تم إيقاف حسابك', 'راجع مدير النظام', 'error'); logout(); return; }
   Object.assign(S.user, { name: me.name, role: me.role, perms: me.perms || [], active: me.active });
   updateMe();
-  if (can('audit.view') !== S.auditSub) { startSync(); return; }
+  if (can('audit.view') !== S.auditSub || canHR() !== S.hrSub) { startSync(); return; }
   S.loaded = true;
   ensureNewAccounts();
   $('#companyName').textContent = S.data.company.name || 'للمقاولات';
   if (document.activeElement?.closest('form[data-keep]')) { renderNav(); return; } // لا نمسح نموذجاً أثناء الكتابة
   render();
+}
+/** ينشئ حسابات دليل الحسابات الافتراضية الناقصة على دفعات (10 لكل طلب، حدود قواعد Firestore) */
+async function createDefaultAccounts(list, summary) {
+  for (let i = 0; i < list.length; i += 10) {
+    const part = list.slice(i, i + 10);
+    await S.db.tx(async (t) => {
+      const need = [];
+      for (const row of part) if (!(await t.get('accounts', 'acc-' + row[0]))) need.push(row);
+      if (!need.length) return;
+      const meta = audit(t, 'create', 'system', 'accounts', `${summary}: ${need.map((r) => r[0]).join('، ')}`);
+      for (const [n, name, type, flags] of need) t.set('accounts', 'acc-' + n, { number: n, name, type, ...flags, system: true, archived: false, createdAt: nowISO(), ...meta });
+    });
+  }
 }
 /** ترقية: إضافة حسابات المصروف الجديدة (5600، 5700) للأنظمة المهيأة قبلها — مرة واحدة بواسطة من يملك صلاحية الحسابات */
 let ensuring = false;
@@ -1045,13 +1359,7 @@ function ensureNewAccounts() {
   const missing = DEFAULT_ACCOUNTS.filter(([n]) => !S.data.accounts.some((a) => a.id === 'acc-' + n));
   if (!missing.length) return;
   ensuring = true;
-  S.db.tx(async (t) => {
-    const need = [];
-    for (const row of missing) if (!(await t.get('accounts', 'acc-' + row[0]))) need.push(row);
-    if (!need.length) return;
-    const meta = audit(t, 'create', 'system', 'upgrade-accounts', `ترقية دليل الحسابات: ${need.map((r) => r[0] + ' ' + r[1]).join('، ')}`);
-    for (const [n, name, type, flags] of need) t.set('accounts', 'acc-' + n, { number: n, name, type, ...flags, system: true, archived: false, createdAt: nowISO(), ...meta });
-  }).catch((e) => console.warn('ترقية الحسابات', e)); // محاولة واحدة لكل جلسة
+  createDefaultAccounts(missing, 'ترقية دليل الحسابات').catch((e) => console.warn('ترقية الحسابات', e)); // محاولة واحدة لكل جلسة
 }
 /** إشعار لحظي عندما يضيف مستخدم آخر شيئاً (يصل لكل المستخدمين) */
 const LIVE_NOTES = {
@@ -1078,6 +1386,8 @@ const SECTIONS = {
   payments: { title: 'سندات القبض', icon: 'wallet', group: 'المبيعات', sub: 'المبالغ المحصّلة من العملاء', render: renderPayments },
   inventory: { title: 'المشتريات والمصروفات', icon: 'box', group: 'المشتريات والأصول', sub: 'سجّل فاتورة المورد فقط — الأصناف تُحفظ تلقائياً', render: renderInventory },
   assets: { title: 'الأصول الثابتة', icon: 'building', group: 'المشتريات والأصول', sub: 'الإهلاك بطريقة القسط الثابت', render: renderAssets },
+  bank: { title: 'كشف الحساب', icon: 'bank', group: 'المحاسبة', sub: 'ارفع كشف البنك وتُسجَّل المصروفات والإيرادات دفعة واحدة', render: renderBank, perm: 'bank.import' },
+  hr: { title: 'الموارد البشرية', icon: 'id', group: 'الموارد البشرية', sub: 'الموظفون والرواتب والسلف ونهاية الخدمة', render: renderHR, perm: ['hr.manage', 'payroll.run', 'audit.view'] },
   journal: { title: 'القيود اليومية', icon: 'book', group: 'المحاسبة', sub: 'قيد مزدوج متزن — المُنشئ لا يعتمد قيده', render: renderJournal },
   accounts: { title: 'دليل الحسابات', icon: 'layers', group: 'المحاسبة', sub: 'الأرصدة من القيود المرحّلة', render: renderAccounts },
   reports: { title: 'التقارير المالية', icon: 'chart', group: 'المحاسبة', sub: 'قائمة الدخل والميزانية والضريبة والمطابقات', render: renderReports },
@@ -1085,7 +1395,7 @@ const SECTIONS = {
   users: { title: 'المستخدمون والصلاحيات', icon: 'key', group: 'الإدارة', sub: 'إضافة وإيقاف وحذف المستخدمين وتحديد صلاحياتهم', render: renderUsers, perm: 'users.manage' },
   settings: { title: 'الإعدادات', icon: 'sliders', group: 'الإدارة', sub: 'بيانات المنشأة وحسابي', render: renderSettings },
 };
-const visible = (key) => !SECTIONS[key].perm || can(SECTIONS[key].perm);
+const visible = (key) => { const p = SECTIONS[key].perm; return !p || (Array.isArray(p) ? p.some((x) => can(x)) : can(p)); };
 
 function renderNav() {
   const overdue = S.data.invoices.filter((i) => i.state.key === 'overdue').length;
@@ -1330,6 +1640,373 @@ function renderInventory() {
 }
 
 /* =====================================================================
+   كشف الحساب البنكي: رفع ← مراجعة التصنيف ← ترحيل
+   ===================================================================== */
+const B = window.HirafBank;
+const BANK_BLOCKED = () => new Set([ACC.ar, ACC.inv, ACC.fa, ACC.accDep]);
+function bankInit() { return { bankAccountId: S.data.accounts.some((a) => a.id === ACC.bank) ? ACC.bank : ACC.cash, file: '', rows: null, header: -1, map: null, items: null, errors: [], busy: false }; }
+/** الحسابات التي يمكن التصنيف عليها، مجمّعة حسب النوع */
+function bankAccountOptions(bankId) {
+  const blocked = BANK_BLOCKED(); blocked.add(bankId);
+  const ok = S.data.accounts.filter((a) => !a.archived && !blocked.has(a.id) && a.id !== ACC.cogs && a.id !== ACC.depExp);
+  const groups = [['Expenses', 'المصروفات'], ['Revenue', 'الإيرادات'], ['Equity', 'حقوق الملكية'], ['Liabilities', 'الخصوم'], ['Assets', 'الأصول (تحويل)']];
+  return groups.map(([t, l]) => [l, ok.filter((a) => a.type === t)]).filter((g) => g[1].length);
+}
+/** ما تعلّمه النظام من استيرادات سابقة: بيان العملية ← التصنيف الذي اختاره المستخدم */
+function bankHistory(bankId) {
+  const m = new Map();
+  const js = S.data.journals.filter((j) => j.bankRef && j.source === 'bank' && j.status === 'posted');
+  for (let i = js.length - 1; i >= 0; i--) { const j = js[i]; const l = j.lines.find((x) => x.accountId !== j.sourceId); if (l) m.set(B.descKey(j.memo), l.accountId); }
+  const ps = S.data.purchases.filter((p) => p.bankRef);
+  for (let i = ps.length - 1; i >= 0; i--) { const p = ps[i]; if (p.lines?.[0]) m.set(B.descKey(p.supplier), p.lines[0].accountId); }
+  return m;
+}
+function bankRefsDone() {
+  const set = new Set();
+  S.data.journals.forEach((j) => j.bankRef && set.add(j.bankRef));
+  S.data.purchases.forEach((p) => p.bankRef && set.add(p.bankRef));
+  return set;
+}
+/** يبني قائمة العمليات من الملف المقروء مع التصنيف المقترح وحالة التكرار */
+function bankBuild() {
+  const st = S.bank;
+  const n = B.normalize(st.rows, st.map, st.header);
+  const refs = B.fingerprints(n.items);
+  const hist = bankHistory(st.bankAccountId), done = bankRefsDone();
+  const accs = new Map(S.data.accounts.filter((a) => !a.archived).map((a) => [a.id, a]));
+  const blocked = BANK_BLOCKED(); blocked.add(st.bankAccountId);
+  const usesPayroll = S.data.payrolls.some((p) => p.status !== 'draft');
+  const firstOf = (type) => S.data.accounts.find((a) => a.type === type && !a.archived && !blocked.has(a.id) && a.id !== ACC.cogs && a.id !== ACC.depExp)?.id || '';
+  st.items = n.items.map((it, k) => {
+    let acc = hist.get(B.descKey(it.desc)) || 'acc-' + B.suggest(it.desc, it.dir);
+    // إن كانت الرواتب تُعتمد من المسير فالتحويل البنكي يسدد «رواتب مستحقة» ولا يُحسب مصروفاً مرتين
+    if (acc === ACC.salaries && usesPayroll && accs.has(ACC.salPay)) acc = ACC.salPay;
+    if (!accs.has(acc) || blocked.has(acc)) acc = it.dir === 'out' ? (accs.has(ACC.general) ? ACC.general : firstOf('Expenses')) : (accs.has(ACC.services) ? ACC.services : firstOf('Revenue'));
+    const ref = refs[k];
+    const dup = done.has(ref);
+    return { ...it, ref, accountId: acc, vat: false, include: !dup, dup, touched: false, learned: hist.has(B.descKey(it.desc)) };
+  });
+  st.errors = n.errors;
+  st.dateOrder = n.dateOrder;
+}
+async function bankReadFile(file) {
+  const st = S.bank || (S.bank = bankInit());
+  if (!file) return;
+  if (file.size > 15 * 1024 * 1024) { toast('الملف كبير جداً', 'الحد 15 ميجابايت', 'error'); return; }
+  try {
+    const { rows } = await B.readStatement(new Uint8Array(await file.arrayBuffer()), file.name);
+    const det = B.detectColumns(rows);
+    Object.assign(st, { file: file.name, rows, header: det.header, map: det.map, detected: det.detected });
+    if (!det.detected) { st.items = []; st.errors = [{ msg: 'لم أتعرف على أعمدة الكشف تلقائياً. حدّد الأعمدة من «تعديل الأعمدة» ثم اضغط إعادة القراءة' }]; }
+    else bankBuild();
+    render();
+    if (det.detected && !st.items.length) toast('لم أجد عمليات في الملف', 'تأكد أن الملف هو كشف الحساب نفسه، أو عدّل الأعمدة', 'error');
+  } catch (err) {
+    toast('تعذّرت قراءة الملف', err instanceof B.StatementError ? err.message : 'الملف تالف أو بصيغة غير مدعومة', 'error');
+    if (!(err instanceof B.StatementError)) console.error(err);
+  }
+}
+function renderBank() {
+  const st = S.bank || (S.bank = bankInit());
+  const cashAccs = S.data.accounts.filter((a) => a.cash && !a.archived);
+  if (!st.items) {
+    const imported = [
+      ...S.data.journals.filter((j) => j.bankRef && j.source === 'bank').map((j) => { const l = j.lines.find((x) => x.accountId !== j.sourceId) || {}; return { date: j.date, desc: j.memo, acc: l.accountId, out: !!l.debitH, amt: j.totalDebitH, st: j.status, id: j.id, kind: 'j' }; }),
+      ...S.data.purchases.filter((p) => p.bankRef).map((p) => ({ date: p.date, desc: p.supplier, acc: p.lines?.[0]?.accountId, out: true, amt: p.totalH, st: 'posted', id: p.id, kind: 'p' })),
+    ].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 150);
+    return `<div class="stack">
+      <div class="card"><div class="card-head"><h3>${icon('bank')}رفع كشف الحساب</h3><span class="hint">Excel ‏(xlsx) أو CSV</span></div>
+        <div class="card-body bank-up">
+          <div class="field"><label for="bkAcc">الكشف يخص حساب</label><select class="select" id="bkAcc">${cashAccs.map((a) => `<option value="${esc(a.id)}" ${a.id === st.bankAccountId ? 'selected' : ''}>${esc(a.number)} — ${esc(a.name)}</option>`).join('')}</select></div>
+          <label class="drop" id="bkDrop" for="bkFile">${icon('upload')}<b>اسحب ملف الكشف هنا أو اضغط لاختياره</b><span>من تطبيق البنك أو موقعه: كشف الحساب ← تصدير ← Excel أو CSV</span>
+            <input type="file" id="bkFile" accept=".xlsx,.csv,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="sr"></label>
+          <ul class="bank-how">
+            <li>يقرأ النظام كل سطر: التاريخ والبيان والمبلغ، ويقترح التصنيف (رواتب، إيجار، وقود، رسوم بنكية، مبيعات…).</li>
+            <li>تراجع القائمة وتعدّل أي تصنيف، ويتذكر النظام اختيارك في المرات القادمة.</li>
+            <li>السحوبات المصنّفة مصروفات تُسجَّل فواتير مشتريات، والباقي قيود مرحّلة. العملية المستوردة سابقاً لا تُكرر.</li>
+          </ul>
+        </div></div>
+      <div class="card"><div class="card-head"><h3>آخر العمليات المستوردة</h3><span class="hint">${imported.length} عملية</span></div>
+        ${imported.length ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>البيان</th><th class="hide-sm">التصنيف</th><th class="money">سحب</th><th class="money">إيداع</th></tr></thead><tbody>
+        ${imported.map((r) => `<tr class="${r.st === 'reversed' ? 'muted-text' : ''}"><td class="nowrap">${fmtDate(r.date)}</td><td><button type="button" class="link plain" data-action="${r.kind === 'j' ? 'view-journal' : 'view-purchase'}" data-id="${esc(r.id)}">${esc(r.desc)}</button>${r.st === 'reversed' ? ' <span class="pill neutral">معكوس</span>' : ''}</td><td class="hide-sm">${esc(accName(r.acc))}</td><td class="money bad-text">${r.out ? M(r.amt) : ''}</td><td class="money ok-text">${r.out ? '' : M(r.amt)}</td></tr>`).join('')}
+        </tbody></table></div>` : empty('bank', 'لم يُستورد أي كشف بعد', 'ارفع أول كشف حساب من الأعلى.')}</div>
+    </div>`;
+  }
+  const items = st.items;
+  const inc = items.filter((r) => r.include);
+  const outH = H.sumInts(inc.filter((r) => r.dir === 'out').map((r) => r.amountH)), inH = H.sumInts(inc.filter((r) => r.dir === 'in').map((r) => r.amountH));
+  const dups = items.filter((r) => r.dup).length;
+  const groups = bankAccountOptions(st.bankAccountId);
+  const accType = new Map(S.data.accounts.map((a) => [a.id, a.type]));
+  const bankAcc = S.data.accounts.find((a) => a.id === st.bankAccountId);
+  const cols = (st.rows[st.header] || st.rows[0] || []).map((c, i) => [i, (st.header >= 0 && c) ? c : `العمود ${i + 1}`]);
+  const colSel = (id, label, val, multi = false) => `<div class="field"><label for="${id}">${label}</label><select class="select" id="${id}"><option value="-1">—</option>${cols.map(([i, c]) => `<option value="${i}" ${(multi ? val.includes(i) : val === i) ? 'selected' : ''}>${esc(String(c).slice(0, 30))}</option>`).join('')}</select></div>`;
+  const optHtml = (sel) => groups.map(([l, list]) => `<optgroup label="${esc(l)}">${list.map((a) => `<option value="${esc(a.id)}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</optgroup>`).join('');
+  return `<form id="bankForm" data-keep novalidate>
+    <div class="toolbar"><span class="pill info">${icon('file')}${esc(st.file)}</span><span class="cell-sub">الحساب: <b>${esc(bankAcc?.name || '')}</b></span>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="bk-reset">${icon('x')}ملف آخر</button></div>
+    <div class="card kpis-card"><div class="kpis bank-kpis">
+      <div class="kpi hero"><div class="kpi-label">عمليات مختارة للترحيل</div><div class="kpi-value">${inc.length}<small>من ${items.length}</small></div><div class="kpi-meta">${dups ? `${dups} سبق استيرادها وستُتجاهل` : 'لا توجد عمليات مكررة'}</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot bad-bg"></span>السحوبات</div><div class="kpi-value">${M(outH)}<small>ر.س</small></div><div class="kpi-meta">${inc.filter((r) => r.dir === 'out').length} عملية</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot ok-bg"></span>الإيداعات</div><div class="kpi-value">${M(inH)}<small>ر.س</small></div><div class="kpi-meta">${inc.filter((r) => r.dir === 'in').length} عملية</div></div>
+      <div class="kpi ${inH - outH < 0 ? 'kpi-bad' : ''}"><div class="kpi-label"><span class="dot"></span>صافي الحركة</div><div class="kpi-value">${M(inH - outH)}<small>ر.س</small></div><div class="kpi-meta">يُضاف إلى رصيد ${esc(bankAcc?.name || 'البنك')}</div></div>
+    </div></div>
+    ${st.errors.length ? `<div class="card bank-errors"><div class="card-head"><h3>${icon('alert')}أسطر لم تُقرأ (${st.errors.length})</h3><span class="hint">لن تُرحّل؛ أضفها يدوياً إن لزم</span></div><ul>${st.errors.slice(0, 15).map((e) => `<li>${esc(e.msg)}</li>`).join('')}${st.errors.length > 15 ? `<li>و${st.errors.length - 15} أخرى…</li>` : ''}</ul></div>` : ''}
+    <details class="more bank-map" ${st.detected ? '' : 'open'}><summary>تعديل الأعمدة${st.detected ? ' (تعرّف النظام عليها تلقائياً)' : ''}</summary>
+      <div class="form-grid three">
+        ${colSel('bkMapDate', 'التاريخ', st.map.date)}${colSel('bkMapDesc', 'البيان', st.map.desc, true)}${colSel('bkMapAmount', 'المبلغ (بإشارة + / −)', st.map.amount)}
+        ${colSel('bkMapDebit', 'مدين / سحب', st.map.debit)}${colSel('bkMapCredit', 'دائن / إيداع', st.map.credit)}
+        <div class="field"><label for="bkHeader">سطر العناوين</label><input class="input num" id="bkHeader" inputmode="numeric" value="${st.header + 1}"></div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="bk-remap">${icon('restore')}إعادة القراءة</button>
+    </details>
+    <div class="card">
+      ${items.length ? `<div class="table-wrap"><table class="bank-table"><thead><tr>
+        <th class="c"><input type="checkbox" id="bkAll" aria-label="تحديد الكل" ${inc.length === items.filter((r) => !r.dup).length && inc.length ? 'checked' : ''}></th>
+        <th>التاريخ</th><th>البيان</th><th class="money">سحب</th><th class="money">إيداع</th><th>التصنيف</th><th class="c" title="السعر شامل ضريبة 15% — للمصروفات فقط">ضريبة</th></tr></thead><tbody>
+        ${items.map((r, i) => {
+          const isExp = r.dir === 'out' && accType.get(r.accountId) === 'Expenses';
+          return `<tr class="${r.dup ? 'row-dup' : ''} ${r.include ? '' : 'row-off'}">
+          <td class="c"><input type="checkbox" data-bk="inc" data-i="${i}" ${r.include ? 'checked' : ''} ${r.dup ? 'disabled' : ''} aria-label="ترحيل العملية"></td>
+          <td class="nowrap num">${fmtDate(r.date)}</td>
+          <td class="bank-desc">${esc(r.desc)}${r.dup ? ' <span class="pill neutral">مستوردة سابقاً</span>' : r.learned ? ' <span class="pill ok" title="تصنيف تعلّمه النظام من اختيارك السابق">محفوظ</span>' : ''}</td>
+          <td class="money bad-text">${r.dir === 'out' ? M(r.amountH) : ''}</td><td class="money ok-text">${r.dir === 'in' ? M(r.amountH) : ''}</td>
+          <td><select class="select sm bank-acc" data-bk="acc" data-i="${i}" aria-label="التصنيف" ${r.dup ? 'disabled' : ''}>${optHtml(r.accountId)}</select></td>
+          <td class="c">${isExp ? `<input type="checkbox" data-bk="vat" data-i="${i}" ${r.vat ? 'checked' : ''} ${r.dup ? 'disabled' : ''} aria-label="شامل الضريبة">` : '<span class="faint">—</span>'}</td></tr>`;
+        }).join('')}
+        </tbody></table></div>` : empty('file', 'لا توجد عمليات مقروءة', 'عدّل الأعمدة من الأعلى ثم اضغط إعادة القراءة.')}
+    </div>
+    <div class="bank-foot">
+      <span class="cell-sub" id="bkProgress">${inc.length ? `سيُرحّل ${inc.length} عملية: ${inc.filter((r) => r.dir === 'out' && accType.get(r.accountId) === 'Expenses').length} مصروفات كفواتير مشتريات، والباقي قيود.` : 'اختر العمليات المراد ترحيلها.'}</span>
+      ${btn('bk-post', `ترحيل ${inc.length} عملية`, { ic: 'check', perm: 'bank.import' })}
+    </div>
+  </form>`;
+}
+function bankPost(el) {
+  const st = S.bank;
+  const rows = st.items.filter((r) => r.include && !r.dup).map((r) => ({ date: r.date, desc: r.desc, dir: r.dir, amountH: r.amountH, accountId: r.accountId, vat: r.vat, ref: r.ref }));
+  if (!rows.length) { toast('اختر عملية واحدة على الأقل', '', 'error'); return; }
+  const prog = $('#bkProgress');
+  run(el, () => Services.importBank({ bankAccountId: st.bankAccountId, rows, fileName: st.file }, (d, n) => { if (prog) prog.textContent = `جارٍ الترحيل… ${d} من ${n}`; }), null, { close: false }).then((res) => {
+    if (!res) return;
+    toast(`رُحّلت ${res.posted} عملية من الكشف`, res.dup ? `${res.dup} عملية كانت مستوردة سابقاً وتُجوهلت` : 'ظهرت في القيود والمشتريات والتقارير');
+    S.bank = { ...bankInit(), bankAccountId: st.bankAccountId };
+    render();
+  });
+}
+
+/* =====================================================================
+   الموارد البشرية
+   ===================================================================== */
+const TERM_REASON = { employer: 'إنهاء من المنشأة / انتهاء العقد', resign: 'استقالة', full: 'مستحقة كاملة (م87)' };
+const serviceText = (days) => { const y = Math.floor(days / 365), m = Math.floor((days % 365) / 30.42); return [y ? `${y} سنة` : '', m ? `${m} شهر` : ''].filter(Boolean).join(' و') || 'أقل من شهر'; };
+const pct = (bp) => (bp / 100).toLocaleString('en', { maximumFractionDigits: 2 }) + '%';
+function eosToday(e, reason = 'employer') { return H.endOfService({ wageH: H.fixedWageH(e), hireDate: e.hireDate, endDate: todayISO(), reason }); }
+
+function renderHR() {
+  const tab = S.tabs.hr;
+  const d = S.data;
+  const act = d.employees.filter((e) => e.status === 'active');
+  const head = `<div class="toolbar">${btn('new-employee', 'موظف جديد', { perm: 'hr.manage', ic: 'plus' })}${btn('new-advance', 'سلفة', { perm: 'hr.manage', cls: 'btn-ghost', ic: 'wallet' })}
+    ${tabs('hr', [['employees', 'الموظفون'], ['payroll', 'مسير الرواتب'], ['advances', 'السلف'], ['eos', 'نهاية الخدمة'], ['settings', 'التأمينات']])}</div>`;
+  if (tab === 'payroll') return head + renderPayroll();
+  if (tab === 'advances') {
+    const l = d.advances;
+    return head + `<div class="card">${l.length ? `<div class="table-wrap"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>الموظف</th><th class="money">المبلغ</th><th class="money hide-sm">القسط</th><th class="money">المسترد</th><th class="money">المتبقي</th><th>الحالة</th></tr></thead><tbody>
+      ${l.map((a) => `<tr><td class="num start"><button type="button" class="link" data-action="view-journal" data-id="${esc(a.journalIds?.[0] || '')}">${esc(a.no)}</button></td><td class="nowrap">${fmtDate(a.date)}</td><td><div class="cell-main">${esc(a.empName)}</div>${a.note ? `<div class="cell-sub">${esc(a.note)}</div>` : ''}</td>
+        <td class="money">${M(a.amountH)}</td><td class="money hide-sm">${M(a.installmentH)} × ${a.installments}</td><td class="money">${M(a.recoveredH)}</td><td class="money"><b>${M(a.remainingH)}</b></td>
+        <td>${a.remainingH ? '<span class="pill warn">قائمة</span>' : '<span class="pill ok">مسددة</span>'}</td></tr>`).join('')}
+      <tr class="total-row"><td colspan="6">إجمالي المتبقي على الموظفين</td><td class="money">${M(H.sumInts(l.map((a) => a.remainingH)))}</td><td></td></tr>
+      </tbody></table></div>` : empty('wallet', 'لا توجد سلف', 'السلفة تُصرف من الصندوق أو البنك وتُستقطع أقساطها من المسير تلقائياً.')}</div>`;
+  }
+  if (tab === 'eos') {
+    const rows = act.map((e) => ({ e, emp: eosToday(e, 'employer'), res: eosToday(e, 'resign') }));
+    const done = d.employees.filter((e) => e.status === 'terminated');
+    return head + `<div class="card"><div class="card-head"><h3>المكافأة المستحقة لو انتهت الخدمة اليوم</h3><span class="hint">نظام العمل م84 و م85 — على الأجر الثابت الأخير</span></div>
+      ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>الموظف</th><th class="hide-sm">المباشرة</th><th>مدة الخدمة</th><th class="money hide-sm">الأجر</th><th class="money">عند إنهاء العقد</th><th class="money">عند الاستقالة</th><th><span class="sr">إجراءات</span></th></tr></thead><tbody>
+      ${rows.map(({ e, emp, res }) => `<tr><td><div class="cell-main">${esc(e.name)}</div><div class="cell-sub">${esc(e.code)}${e.jobTitle ? ' · ' + esc(e.jobTitle) : ''}</div></td><td class="nowrap hide-sm">${fmtDate(e.hireDate)}</td><td class="nowrap">${serviceText(emp.days)}</td>
+        <td class="money hide-sm">${M(H.fixedWageH(e))}</td><td class="money"><b>${M(emp.awardH)}</b></td><td class="money">${M(res.awardH)}${res.factor[0] !== res.factor[1] ? ` <span class="cell-sub">(${res.factor[0] ? res.factor.join('/') : 'لا شيء'})</span>` : ''}</td>
+        <td>${btn('terminate-employee', 'إنهاء الخدمة', { cls: 'btn-quiet btn-sm', ic: 'logout', data: { id: e.id }, perm: 'hr.manage' })}</td></tr>`).join('')}
+      <tr class="total-row"><td colspan="4">الالتزام التقديري لنهاية الخدمة</td><td class="money">${M(H.sumInts(rows.map((r) => r.emp.awardH)))}</td><td class="money">${M(H.sumInts(rows.map((r) => r.res.awardH)))}</td><td></td></tr>
+      </tbody></table></div>` : empty('id', 'لا يوجد موظفون نشطون')}</div>
+      ${done.length ? `<div class="card mt"><div class="card-head"><h3>انتهت خدمتهم</h3></div><div class="table-wrap"><table><thead><tr><th>الموظف</th><th>تاريخ الانتهاء</th><th>السبب</th><th class="money">المكافأة</th><th class="money hide-sm">خُصم سلف</th><th class="money">الصافي</th></tr></thead><tbody>
+      ${done.map((e) => `<tr><td><div class="cell-main">${esc(e.name)}</div><div class="cell-sub">${esc(e.code)} · ${serviceText(e.eosDays || 0)}</div></td><td class="nowrap">${fmtDate(e.termDate)}</td><td>${esc(TERM_REASON[e.termReason] || '')}</td><td class="money">${e.journalIds?.[0] ? `<button type="button" class="link" data-action="view-journal" data-id="${esc(e.journalIds[0])}">${M(e.eosH)}</button>` : M(e.eosH)}</td><td class="money hide-sm">${M(e.eosH - e.eosNetH)}</td><td class="money"><b>${M(e.eosNetH)}</b></td></tr>`).join('')}
+      </tbody></table></div></div>` : ''}`;
+  }
+  if (tab === 'settings') {
+    const r = d.hr;
+    return head + `<div class="card"><div class="card-head"><h3>نسب التأمينات الاجتماعية</h3><span class="hint">تُطبّق على المسيرات الجديدة</span></div><div class="card-body">
+      <form id="hrSetForm" class="form-grid" novalidate style="max-width:720px">
+        <div class="field"><label for="gEmpSa">حصة الموظف السعودي %</label><input class="input num" id="gEmpSa" inputmode="decimal" value="${r.empSaudiBp / 100}"></div>
+        <div class="field"><label for="gErSa">حصة المنشأة عن السعودي %</label><input class="input num" id="gErSa" inputmode="decimal" value="${r.erSaudiBp / 100}"></div>
+        <div class="field"><label for="gErNon">حصة المنشأة عن غير السعودي (أخطار مهنية) %</label><input class="input num" id="gErNon" inputmode="decimal" value="${r.erNonSaudiBp / 100}"></div>
+        <div class="field"><label for="gCap">الحد الأعلى للأجر الخاضع (أساسي + سكن)</label><input class="input num" id="gCap" inputmode="decimal" value="${H.moneyInput(r.capH)}"></div>
+        <p class="span-2 cell-sub">الوعاء = الراتب الأساسي + بدل السكن. النسب الافتراضية: السعودي 9.75% على الموظف و11.75% على المنشأة، وغير السعودي 2% على المنشأة. نسب التأمينات تتغير بقرارات دورية، فطابقها مع حسابك في «التأمينات الاجتماعية» قبل أول مسير.</p>
+        ${can('hr.manage') ? `<div class="span-2"><button class="btn btn-primary" type="submit">${icon('save')}حفظ النسب</button></div>` : ''}
+      </form></div></div>`;
+  }
+  // الموظفون
+  const all = d.employees.filter((e) => e.status === 'active' || S.hrShowAll);
+  const wageTot = H.sumInts(act.map(H.fixedWageH));
+  const saudis = act.filter((e) => e.isSaudi).length;
+  return head + `<div class="card kpis-card"><div class="kpis">
+      <div class="kpi hero"><div class="kpi-label">الموظفون النشطون</div><div class="kpi-value">${act.length}</div><div class="kpi-meta">${saudis} سعودي · ${act.length - saudis} غير سعودي</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot navy-bg"></span>الرواتب الثابتة شهرياً</div><div class="kpi-value">${M(wageTot)}<small>ر.س</small></div><div class="kpi-meta">قبل الإضافي والخصومات</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot ok-bg"></span>نسبة السعودة</div><div class="kpi-value">${act.length ? Math.round((saudis / act.length) * 100) : 0}%</div><div class="kpi-meta">من الموظفين النشطين</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot warn-bg"></span>سلف قائمة</div><div class="kpi-value">${M(d.recon.advSubH)}<small>ر.س</small></div><div class="kpi-meta">${d.advances.filter((a) => a.remainingH).length} سلفة</div></div>
+    </div></div>
+    <div class="card mt"><div class="card-head"><h3>ملف الموظفين</h3><label class="check actions"><input type="checkbox" id="hrShowAll" ${S.hrShowAll ? 'checked' : ''}> عرض من انتهت خدمتهم</label></div>
+    ${all.length ? `<div class="table-wrap"><table><thead><tr><th>الرقم</th><th>الموظف</th><th class="hide-sm">الجنسية</th><th class="hide-sm">الموقع</th><th class="hide-sm">المباشرة</th><th class="money">الأجر الثابت</th><th>الحالة</th><th><span class="sr">إجراءات</span></th></tr></thead><tbody>
+    ${all.map((e) => `<tr><td class="num start">${esc(e.code)}</td><td><div class="cell-main">${esc(e.name)}</div><div class="cell-sub">${esc(e.jobTitle || '')}</div></td>
+      <td class="hide-sm">${e.isSaudi ? 'سعودي' : esc(e.nationality || 'غير سعودي')}${e.gosi ? '' : ' <span class="pill neutral">بلا تأمينات</span>'}</td><td class="hide-sm">${esc(e.site || '—')}</td><td class="nowrap hide-sm">${fmtDate(e.hireDate)}</td>
+      <td class="money"><b>${M(H.fixedWageH(e))}</b></td><td>${e.status === 'active' ? '<span class="pill ok">على رأس العمل</span>' : `<span class="pill neutral">انتهت ${fmtDate(e.termDate)}</span>`}</td>
+      <td><div class="row-actions">${e.status === 'active' ? btn('edit-employee', '', { cls: 'btn-quiet btn-sm icon-btn', ic: 'edit', data: { id: e.id }, title: 'تعديل', perm: 'hr.manage' }) + btn('terminate-employee', '', { cls: 'btn-quiet btn-sm icon-btn', ic: 'logout', data: { id: e.id }, title: 'إنهاء الخدمة', perm: 'hr.manage' }) : ''}</div></td></tr>`).join('')}
+    </tbody></table></div>` : empty('id', 'لا يوجد موظفون بعد', 'أضف الموظفين ورواتبهم، ثم جهّز مسير الشهر.', btn('new-employee', 'موظف جديد', { perm: 'hr.manage' }))}</div>`;
+}
+
+/* ---------- مسير الرواتب ---------- */
+function renderPayroll() {
+  const month = S.hrMonth || (S.hrMonth = thisMonth());
+  const p = S.data.payrolls.find((x) => x.id === month);
+  const bar = `<div class="card pr-bar"><label for="hrMonth">الشهر</label><input class="input" type="month" id="hrMonth" value="${month}">
+    ${p ? `<span class="pill ${p.status === 'draft' ? 'warn' : p.status === 'posted' ? 'info' : 'ok'}">${{ draft: 'مسودة', posted: 'معتمد — بانتظار الصرف', paid: 'مصروف' }[p.status]}</span>` : ''}
+    <span class="grow"></span>${S.data.payrolls.length ? `<span class="cell-sub">مسيرات سابقة: ${S.data.payrolls.slice(0, 6).map((x) => `<button type="button" class="link" data-action="hr-month" data-m="${x.id}">${esc(fmtMonth(x.id))}</button>`).join(' · ')}</span>` : ''}</div>`;
+  if (!p) return bar + `<div class="card">${empty('calc', `لا يوجد مسير لشهر ${fmtMonth(month)}`, 'يُجهَّز المسير من الموظفين النشطين ورواتبهم، ثم تُدخل الإضافي والغياب وتعتمده.', btn('prepare-payroll', 'إعداد مسير الشهر', { perm: 'payroll.run', ic: 'plus' }))}</div>`;
+  const draft = p.status === 'draft';
+  const edits = (S.prEdits ||= {})[month] ||= {};
+  const rows = p.lines.map((l0) => {
+    const l = draft ? { ...l0, ...(edits[l0.employeeId] || {}) } : l0;
+    let c; try { c = draft ? H.payrollLine(l, l, S.data.hr) : l; } catch { c = { fixedH: 0, grossH: 0, gosiEmpH: 0, gosiErH: 0, netH: 0, absenceH: 0 }; }
+    return { l, c };
+  });
+  const T = (k) => H.sumInts(rows.map((r) => r.c[k] || 0));
+  const PR_LABEL = { overtimeH: 'إضافي', bonusH: 'مكافأة', absenceDays: 'أيام غياب', penaltyH: 'جزاءات', advanceH: 'قسط سلفة' };
+  const inp = (l, key, v) => `<input class="input num sm" id="pr-${esc(l.employeeId)}-${key}" data-pr="${key}" data-e="${esc(l.employeeId)}" value="${esc(v)}" inputmode="decimal" aria-label="${PR_LABEL[key]} — ${esc(l.name)}">`;
+  const table = `<div class="table-wrap"><table class="pr-table"><thead><tr><th>الموظف</th><th class="money">الأجر الثابت</th><th class="money">إضافي</th><th class="money">مكافأة</th><th class="money">أيام غياب</th><th class="money">جزاءات</th><th class="money">قسط سلفة</th><th class="money">تأمينات الموظف</th><th class="money">الصافي</th></tr></thead><tbody>
+    ${rows.map(({ l, c }) => `<tr class="${c.netH < 0 ? 'row-warn' : ''}"><td><div class="cell-main">${esc(l.name)}</div><div class="cell-sub">${esc(l.code)}${l.site ? ' · ' + esc(l.site) : ''}</div></td>
+      <td class="money">${M(c.fixedH)}</td>
+      ${draft ? `<td>${inp(l, 'overtimeH', l.overtimeH ? H.moneyInput(l.overtimeH) : '')}</td><td>${inp(l, 'bonusH', l.bonusH ? H.moneyInput(l.bonusH) : '')}</td><td>${inp(l, 'absenceDays', l.absenceDays || '')}</td><td>${inp(l, 'penaltyH', l.penaltyH ? H.moneyInput(l.penaltyH) : '')}</td><td>${inp(l, 'advanceH', l.advanceH ? H.moneyInput(l.advanceH) : '')}</td>`
+        : `<td class="money">${M(l.overtimeH)}</td><td class="money">${M(l.bonusH)}</td><td class="money">${l.absenceDays || 0}${l.absenceH ? ` <span class="cell-sub">(${H.fmtMoney(l.absenceH)})</span>` : ''}</td><td class="money">${M(l.penaltyH)}</td><td class="money">${M(l.advanceH)}</td>`}
+      <td class="money">${M(c.gosiEmpH)}</td><td class="money"><b class="${c.netH < 0 ? 'bad-text' : ''}">${M(c.netH)}</b></td></tr>`).join('')}
+    <tr class="total-row"><td>الإجمالي (${rows.length})</td><td class="money">${M(T('fixedH'))}</td><td class="money">${M(H.sumInts(rows.map((r) => r.l.overtimeH || 0)))}</td><td class="money">${M(H.sumInts(rows.map((r) => r.l.bonusH || 0)))}</td><td class="money">${M(T('absenceH'))}</td><td class="money">${M(H.sumInts(rows.map((r) => r.l.penaltyH || 0)))}</td><td class="money">${M(H.sumInts(rows.map((r) => r.l.advanceH || 0)))}</td><td class="money">${M(T('gosiEmpH'))}</td><td class="money">${M(T('netH'))}</td></tr>
+    </tbody></table></div>`;
+  const summary = `<div class="pr-sum"><div><span class="cell-sub">إجمالي الرواتب (مصروف)</span><b>${M(T('grossH'))}</b></div><div><span class="cell-sub">حصة المنشأة في التأمينات</span><b>${M(T('gosiErH'))}</b></div><div><span class="cell-sub">التأمينات المستحقة (الحصتان)</span><b>${M(T('gosiEmpH') + T('gosiErH'))}</b></div><div class="grand"><span class="cell-sub">صافي الرواتب للصرف</span><b>${M(T('netH'))} ر.س</b></div></div>`;
+  const actions = draft
+    ? `${btn('prepare-payroll', 'تحديث من ملف الموظفين', { cls: 'btn-ghost', ic: 'restore', perm: 'payroll.run' })}${btn('save-payroll', 'حفظ المسودة', { cls: 'btn-ghost', ic: 'save', perm: 'payroll.run' })}${btn('post-payroll', 'اعتماد المسير', { ic: 'check', perm: 'payroll.run' })}`
+    : `${p.journalIds?.map((id, k) => `<button type="button" class="btn btn-ghost btn-sm" data-action="view-journal" data-id="${esc(id)}">${icon('book')}${k ? 'قيد الصرف' : 'قيد الاستحقاق'}</button>`).join('') || ''}
+       ${btn('export-payroll', 'ملف التحويل البنكي (CSV)', { cls: 'btn-ghost', ic: 'download', perm: 'payroll.run' })}${p.status === 'posted' ? btn('pay-payroll', 'صرف الرواتب', { ic: 'wallet', perm: 'payroll.run' }) : ''}`;
+  return bar + `<form id="payrollForm" data-keep novalidate><div class="card">${table}${summary}<div class="pr-actions">${draft ? '<span class="cell-sub">المبالغ بالريال، والغياب بالأيام (يُخصم الأجر الثابت ÷ 30 عن كل يوم).</span>' : `<span class="cell-sub">اعتمده ${esc(userName(p.postedBy))} · ${fmtDateTime(p.postedAt)}${p.paidAt ? ` — صُرف ${fmtDateTime(p.paidAt)}` : ''}</span>`}<div class="actions">${actions}</div></div></div></form>`;
+}
+/** يقرأ خانات المسودة المعدّلة ويخزنها (بالهللة)، ويعلّم الخانة الخاطئة */
+function payrollEditsFromDom() {
+  const month = S.hrMonth, edits = (S.prEdits ||= {})[month] ||= {};
+  for (const el of $$('[data-pr]')) {
+    const e = edits[el.dataset.e] ||= {};
+    const v = el.value.trim();
+    try { e[el.dataset.pr] = el.dataset.pr === 'absenceDays' ? (v ? H.parseInteger(v, { min: 0, max: 30, label: 'أيام الغياب' }) : 0) : (v ? H.parseMoney(v, { allowZero: true }) : 0); }
+    catch (err) { el.classList.add('invalid-input'); el.focus(); throw err; }
+  }
+  return edits;
+}
+
+/* ---------- نوافذ الموارد البشرية ---------- */
+function employeeModal(id = '') {
+  const e = (id && S.data.employees.find((x) => x.id === id)) || { isSaudi: true, gosi: true, hireDate: todayISO() };
+  const mv = (h) => (h ? H.moneyInput(h) : '');
+  openModal(id ? `تعديل بيانات ${e.name}` : 'موظف جديد', `<form id="empForm" class="form-grid three" novalidate>
+    <div class="field span-2"><label for="eName">الاسم *</label><input class="input" id="eName" maxlength="100" value="${esc(e.name)}"></div>
+    <div class="field"><label for="eJob">المهنة</label><input class="input" id="eJob" maxlength="60" value="${esc(e.jobTitle)}" placeholder="مهندس موقع، نجار، سائق…"></div>
+    <div class="field"><label for="eSaudi">الجنسية</label><select class="select" id="eSaudi"><option value="1" ${e.isSaudi ? 'selected' : ''}>سعودي</option><option value="0" ${e.isSaudi ? '' : 'selected'}>غير سعودي</option></select></div>
+    <div class="field"><label for="eNat">الجنسية (لغير السعودي)</label><input class="input" id="eNat" maxlength="30" value="${esc(e.nationality)}" placeholder="مثال: مصري"></div>
+    <div class="field"><label for="eId">رقم الهوية / الإقامة</label><input class="input num" id="eId" maxlength="10" inputmode="numeric" dir="ltr" value="${esc(e.idNumber)}"></div>
+    <div class="field"><label for="eHire">تاريخ المباشرة *</label><input class="input" type="date" id="eHire" value="${esc(e.hireDate)}"></div>
+    <div class="field"><label for="eSite">الموقع / المشروع</label><input class="input" id="eSite" maxlength="60" value="${esc(e.site)}"></div>
+    <div class="field"><label for="ePhone">الجوال</label><input class="input num" id="ePhone" maxlength="13" inputmode="tel" dir="ltr" value="${esc(e.phone)}"></div>
+    <div class="field"><label for="eBasic">الراتب الأساسي *</label><input class="input num" id="eBasic" inputmode="decimal" value="${mv(e.basicH)}"></div>
+    <div class="field"><label for="eHousing">بدل السكن</label><input class="input num" id="eHousing" inputmode="decimal" value="${mv(e.housingH)}" placeholder="عادة 25% من الأساسي"></div>
+    <div class="field"><label for="eTrans">بدل النقل</label><input class="input num" id="eTrans" inputmode="decimal" value="${mv(e.transportH)}"></div>
+    <div class="field"><label for="eOther">بدلات أخرى ثابتة</label><input class="input num" id="eOther" inputmode="decimal" value="${mv(e.otherH)}"></div>
+    <div class="field"><label for="eBank">البنك</label><input class="input" id="eBank" maxlength="40" value="${esc(e.bankName)}"></div>
+    <div class="field"><label for="eIban">الآيبان</label><input class="input" id="eIban" maxlength="34" dir="ltr" value="${esc(e.iban)}" placeholder="SA…"></div>
+    <label class="check span-3"><input type="checkbox" id="eGosi" ${e.gosi ? 'checked' : ''}> مسجّل في التأمينات الاجتماعية</label>
+    <p class="span-3 cell-sub" id="ePreview"></p>
+  </form>`, cancelBtn + submitBtn('empForm', id ? 'حفظ التعديل' : 'إضافة الموظف'), { xwide: true });
+  const money = (id2) => { const v = $('#' + id2).value.trim(); return v ? H.parseMoney(v, { allowZero: true }) : 0; };
+  const preview = () => {
+    try {
+      const x = { basicH: money('eBasic'), housingH: money('eHousing'), transportH: money('eTrans'), otherH: money('eOther'), isSaudi: $('#eSaudi').value === '1', gosi: $('#eGosi').checked };
+      const g = H.gosiShares(x, S.data.hr);
+      $('#ePreview').innerHTML = `الأجر الثابت ${M(H.fixedWageH(x))} ر.س · تأمينات الموظف ${M(g.empH)} · على المنشأة ${M(g.erH)} · الصافي التقريبي ${M(H.fixedWageH(x) - g.empH)}`;
+    } catch { $('#ePreview').textContent = ''; }
+  };
+  $('#empForm').addEventListener('input', preview); $('#empForm').addEventListener('change', preview); preview();
+  $('#empForm').addEventListener('submit', formGuard(() => {
+    const f = { name: $('#eName').value, jobTitle: $('#eJob').value, isSaudi: $('#eSaudi').value === '1', nationality: $('#eNat').value, idNumber: $('#eId').value,
+      hireDate: field('eHire', (v) => H.parseDate(v, 'تاريخ المباشرة')), site: $('#eSite').value, phone: $('#ePhone').value,
+      basicH: field('eBasic', (v) => H.parseMoney(v, { label: 'الراتب الأساسي' })), housingH: field('eHousing', (v) => (v.trim() ? H.parseMoney(v, { allowZero: true, label: 'بدل السكن' }) : 0)),
+      transportH: field('eTrans', (v) => (v.trim() ? H.parseMoney(v, { allowZero: true, label: 'بدل النقل' }) : 0)), otherH: field('eOther', (v) => (v.trim() ? H.parseMoney(v, { allowZero: true, label: 'البدلات' }) : 0)),
+      bankName: $('#eBank').value, iban: $('#eIban').value, gosi: $('#eGosi').checked };
+    run(document.querySelector('[form=empForm]'), () => Services.saveEmployee(id, f), [id ? 'حُفظت بيانات الموظف' : 'أُضيف الموظف', (c) => c]);
+  }));
+}
+function advanceModal() {
+  const emps = S.data.employees.filter((e) => e.status === 'active');
+  if (!emps.length) { toast('أضف موظفاً أولاً', '', 'error'); return; }
+  openModal('صرف سلفة لموظف', `<form id="advForm" class="form-grid" novalidate>
+    <div class="field span-2"><label for="aEmp">الموظف *</label><select class="select" id="aEmp">${emps.map((e) => `<option value="${esc(e.id)}">${esc(e.code)} — ${esc(e.name)}</option>`).join('')}</select></div>
+    <div class="field"><label for="aAmt">مبلغ السلفة *</label><input class="input num" id="aAmt" inputmode="decimal"></div>
+    <div class="field"><label for="aInst">عدد الأقساط الشهرية</label><input class="input num" id="aInst" inputmode="numeric" value="1"></div>
+    <div class="field"><label for="aDate">التاريخ</label><input class="input" type="date" id="aDate" value="${todayISO()}"></div>
+    <div class="field"><label for="aPay">تُصرف من</label><select class="select" id="aPay">${cashOptions(false)}</select></div>
+    <div class="field span-2"><label for="aNote">ملاحظة</label><input class="input" id="aNote" maxlength="120"></div>
+    <p class="span-2 cell-sub" id="aPrev"></p></form>`, cancelBtn + submitBtn('advForm', 'صرف السلفة'));
+  const prev = () => { try { const a = H.parseMoney($('#aAmt').value), n = H.parseInteger($('#aInst').value, { min: 1, max: 36 }); $('#aPrev').innerHTML = `القسط الشهري ${M(Math.ceil(a / n))} ر.س يُستقطع تلقائياً من المسير`; } catch { $('#aPrev').textContent = ''; } };
+  $('#advForm').addEventListener('input', prev);
+  $('#advForm').addEventListener('submit', formGuard(() => {
+    const f = { employeeId: $('#aEmp').value, amountH: field('aAmt', (v) => H.parseMoney(v, { label: 'مبلغ السلفة' })), installments: field('aInst', (v) => H.parseInteger(v, { min: 1, max: 36, label: 'عدد الأقساط' })),
+      date: field('aDate', (v) => H.parseDate(v)), payAccountId: $('#aPay').value, note: $('#aNote').value };
+    run(document.querySelector('[form=advForm]'), () => Services.createAdvance(f), ['صُرفت السلفة', (n) => n]);
+  }));
+}
+function terminateModal(id) {
+  const e = S.data.employees.find((x) => x.id === id); if (!e) return;
+  const open = H.sumInts(S.data.advances.filter((a) => a.employeeId === id).map((a) => a.remainingH));
+  openModal(`إنهاء خدمة ${e.name}`, `<form id="termForm" class="form-grid" novalidate>
+    <div class="field"><label for="tDate">آخر يوم عمل *</label><input class="input" type="date" id="tDate" value="${todayISO()}"></div>
+    <div class="field"><label for="tReason">السبب *</label><select class="select" id="tReason">${Object.entries(TERM_REASON).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+    <div class="field"><label for="tPay">صرف المكافأة</label><select class="select" id="tPay">${cashOptions(false)}<option value="${ACC.salPay}">تُسجّل مستحقة وتُصرف لاحقاً</option></select></div>
+    <div class="field"><label for="tNote">ملاحظة</label><input class="input" id="tNote" maxlength="200"></div>
+    <div class="span-2 term-box" id="tPrev"></div>
+    <p class="span-2 cell-sub">اعتمد مسير الشهر الأخير قبل إنهاء الخدمة؛ الموظف لا يدخل المسيرات بعد الإنهاء. تعويض الإجازات غير المستخدمة لا يُحسب هنا.</p></form>`,
+  cancelBtn + submitBtn('termForm', 'إنهاء الخدمة واحتساب المكافأة', 'logout'), { wide: true });
+  const prev = () => {
+    const date = $('#tDate').value, reason = $('#tReason').value;
+    if (!H.isISODate(date) || date < e.hireDate) { $('#tPrev').innerHTML = '<span class="bad-text">تاريخ غير صالح</span>'; return; }
+    const r = H.endOfService({ wageH: H.fixedWageH(e), hireDate: e.hireDate, endDate: date, reason });
+    const ded = Math.min(open, r.awardH);
+    $('#tPrev').innerHTML = `<div><span class="cell-sub">مدة الخدمة</span><b>${serviceText(r.days)}</b></div><div><span class="cell-sub">الأجر المعتمد</span><b>${M(H.fixedWageH(e))}</b></div>
+      <div><span class="cell-sub">المكافأة الكاملة</span><b>${M(r.fullH)}</b></div><div><span class="cell-sub">المستحق${r.factor[0] !== r.factor[1] ? ` (${r.factor[0] ? r.factor.join('/') : 'لا شيء'})` : ''}</span><b>${M(r.awardH)}</b></div>
+      ${ded ? `<div><span class="cell-sub">يُخصم سلف قائمة</span><b class="bad-text">${M(ded)}</b></div>` : ''}<div class="grand"><span class="cell-sub">الصافي للموظف</span><b>${M(r.awardH - ded)} ر.س</b></div>`;
+  };
+  $('#termForm').addEventListener('input', prev); $('#termForm').addEventListener('change', prev); prev();
+  $('#termForm').addEventListener('submit', formGuard(() => {
+    const f = { date: field('tDate', (v) => H.parseDate(v)), reason: $('#tReason').value, payAccountId: $('#tPay').value, note: $('#tNote').value };
+    run(document.querySelector('[form=termForm]'), () => Services.terminateEmployee(id, f), ['انتهت خدمة الموظف', (a) => `المكافأة ${H.fmtMoney(a)} ر.س`]);
+  }));
+}
+function payPayrollModal() {
+  const p = S.data.payrolls.find((x) => x.id === S.hrMonth); if (!p) return;
+  openModal(`صرف رواتب ${fmtMonth(p.id)}`, `<form id="payPrForm" class="form-grid" novalidate>
+    <div class="field"><label for="ppAcc">من حساب</label><select class="select" id="ppAcc">${cashOptions(false)}</select></div>
+    <div class="field"><label for="ppDate">تاريخ الصرف</label><input class="input" type="date" id="ppDate" value="${todayISO()}"></div>
+    <p class="span-2">المبلغ: <b>${M(p.totals.netH)} ر.س</b> لـ ${p.lines.length} موظف. إن كنت ستستورد كشف البنك لاحقاً فلا تصرف من هنا، بل صنّف عملية الرواتب في الكشف على «رواتب مستحقة» حتى لا تتكرر.</p></form>`,
+  cancelBtn + submitBtn('payPrForm', 'تسجيل الصرف', 'wallet'));
+  $('#payPrForm').addEventListener('submit', formGuard(() => {
+    run(document.querySelector('[form=payPrForm]'), () => Services.payPayroll(p.id, $('#ppAcc').value, field('ppDate', (v) => H.parseDate(v))), ['سُجّل صرف الرواتب', '']);
+  }));
+}
+
+/* =====================================================================
    الأصول الثابتة
    ===================================================================== */
 function renderAssets() {
@@ -1440,7 +2117,7 @@ function reportData(key) {
   }
   const rc = d.recon;
   const items = [['الفواتير المفتوحة مقابل حساب العملاء 1300', rc.arSubH, rc.arGlH], ['أرصدة الأصناف مقابل حساب المخزون 1400', rc.invSubH, rc.invGlH],
-    ['سجل الأصول مقابل حساب الأصول الثابتة 1600', rc.faSubH, rc.faGlH], ['الإهلاك المحتسب مقابل مجمع الإهلاك 1690', rc.depSubH, rc.depGlH]];
+    ['سجل الأصول مقابل حساب الأصول الثابتة 1600', rc.faSubH, rc.faGlH], ['الإهلاك المحتسب مقابل مجمع الإهلاك 1690', rc.depSubH, rc.depGlH], ...(canHR() ? [['أرصدة سلف الموظفين مقابل حساب السلف 1350', rc.advSubH, rc.advGlH]] : [])];
   const tb = H.trialBalance(d.accounts, d.journals, todayISO());
   const seq = sequenceCheck(d.invoices.filter((i) => i.number).map((i) => i.number));
   const allOk = items.every(([, a, b]) => a === b) && tb.balanced && seq.ok;
@@ -1484,8 +2161,8 @@ function renderReports() {
 /* =====================================================================
    سجل المراجعة
    ===================================================================== */
-const AUDIT_ACTIONS = { create: 'إنشاء', update: 'تعديل', issue: 'إصدار', void: 'إلغاء', cancel: 'إلغاء', post: 'اعتماد', reverse: 'عكس', archive: 'أرشفة', restore: 'استعادة', delete: 'حذف', activate: 'تفعيل', deactivate: 'إيقاف' };
-const AUDIT_ENTITIES = { invoice: 'فاتورة', payment: 'سند قبض', journal: 'قيد', customer: 'عميل', item: 'صنف', purchase: 'مشتريات', asset: 'أصل', depreciation: 'إهلاك', account: 'حساب', user: 'مستخدم', settings: 'إعدادات', system: 'النظام' };
+const AUDIT_ACTIONS = { create: 'إنشاء', update: 'تعديل', issue: 'إصدار', void: 'إلغاء', cancel: 'إلغاء', post: 'اعتماد', reverse: 'عكس', archive: 'أرشفة', restore: 'استعادة', delete: 'حذف', activate: 'تفعيل', deactivate: 'إيقاف', import: 'استيراد', terminate: 'إنهاء خدمة', pay: 'صرف' };
+const AUDIT_ENTITIES = { invoice: 'فاتورة', payment: 'سند قبض', journal: 'قيد', customer: 'عميل', item: 'صنف', purchase: 'مشتريات', asset: 'أصل', depreciation: 'إهلاك', account: 'حساب', user: 'مستخدم', settings: 'إعدادات', system: 'النظام', bank: 'كشف الحساب', employee: 'موظف', advance: 'سلفة', payroll: 'مسير رواتب' };
 function filteredAudit() {
   const { user, entity } = S.auditFilter;
   return S.data.audit.filter((a) => (!user || a.actor === user) && (!entity || a.entity === entity) && matches('aud', a.summary));
@@ -1844,7 +2521,7 @@ function viewJournal(id) {
     j.status === 'draft' && mine ? btn('edit-journal', 'تعديل', { cls: 'btn-ghost', ic: 'edit', data: { id }, perm: 'journal.create' }) : '',
     j.status === 'draft' && (mine || can('journal.post')) ? btn('cancel-journal', mine ? 'إلغاء القيد' : 'رفض', { cls: 'btn-ghost', ic: 'x', data: { id } }) : '',
     j.status === 'draft' && !mine ? btn('post-journal', 'اعتماد وترحيل', { ic: 'check', data: { id }, perm: 'journal.post' }) : '',
-    j.status === 'posted' && j.source === 'manual' ? btn('reverse-journal', 'عكس القيد', { cls: 'btn-danger', ic: 'undo', data: { id }, perm: 'journal.reverse' }) : '',
+    j.status === 'posted' && ['manual', 'bank'].includes(j.source) ? btn('reverse-journal', 'عكس القيد', { cls: 'btn-danger', ic: 'undo', data: { id }, perm: 'journal.reverse' }) : '',
   ].join('');
   openModal(`القيد ${j.no}`, body, `<button type="button" class="btn btn-ghost" data-action="close-modal">إغلاق</button>${acts}`, { wide: true });
 }
@@ -2084,6 +2761,14 @@ function download(filename, text) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+function exportPayroll() {
+  need('payroll.run');
+  const p = S.data.payrolls.find((x) => x.id === S.hrMonth); if (!p) return;
+  const rows = [['رقم الموظف', 'الاسم', 'البنك', 'الآيبان', 'الأجر الثابت', 'إضافي', 'مكافأة', 'أيام غياب', 'خصم الغياب', 'جزاءات', 'قسط سلفة', 'تأمينات الموظف', 'الصافي'],
+    ...p.lines.map((l) => [l.code, l.name, l.bankName, l.iban, H.csvMoney(l.fixedH), H.csvMoney(l.overtimeH || 0), H.csvMoney(l.bonusH || 0), l.absenceDays || 0, H.csvMoney(l.absenceH || 0), H.csvMoney(l.penaltyH || 0), H.csvMoney(l.advanceH || 0), H.csvMoney(l.gosiEmpH), H.csvMoney(l.netH)]),
+    ['', 'الإجمالي', '', '', '', '', '', '', '', '', '', H.csvMoney(p.totals.gosiEmpH), H.csvMoney(p.totals.netH)]];
+  download(`مسير-رواتب-${p.id}.csv`, H.toCSV(rows));
+}
 function exportWhat(what, key) {
   need('reports.export');
   const d = S.data, co = d.company.name || 'الحرف المتكاملة للمقاولات';
@@ -2151,6 +2836,23 @@ function confirmTwice(el, label = 'اضغط مرة أخرى للتأكيد') {
 }
 
 const ACTIONS = {
+  'new-employee': () => employeeModal(), 'edit-employee': (el) => employeeModal(el.dataset.id), 'terminate-employee': (el) => terminateModal(el.dataset.id),
+  'new-advance': () => advanceModal(), 'pay-payroll': () => payPayrollModal(),
+  'hr-month': (el) => { S.hrMonth = el.dataset.m; render(); },
+  'prepare-payroll': (el) => { const m = S.hrMonth; if (S.prEdits?.[m]) try { payrollEditsFromDom(); } catch { /* يُتجاهل */ } run(el, async () => { if (S.prEdits?.[m] && S.data.payrolls.some((p) => p.id === m)) await Services.savePayroll(m, S.prEdits[m]); await Services.preparePayroll(m); }, ['جُهّز المسير', fmtMonth(m)], { close: false }).then(() => render()); },
+  'save-payroll': (el) => { let e; try { e = payrollEditsFromDom(); } catch (err) { toast('راجع الخانة المعلّمة', err.message, 'error'); return; } run(el, () => Services.savePayroll(S.hrMonth, e), ['حُفظت المسودة', ''], { close: false }).then(() => render()); },
+  'post-payroll': (el) => { let e; try { e = payrollEditsFromDom(); } catch (err) { toast('راجع الخانة المعلّمة', err.message, 'error'); return; } run(el, () => Services.postPayroll(S.hrMonth, e), ['اعتُمد المسير ورُحّل قيده', (no) => no], { close: false }).then((r) => { if (r) { delete S.prEdits[S.hrMonth]; render(); } }); },
+  'export-payroll': () => exportPayroll(),
+  'bk-reset': () => { S.bank = { ...bankInit(), bankAccountId: S.bank?.bankAccountId || ACC.bank }; render(); },
+  'bk-post': (el) => bankPost(el),
+  'bk-remap': () => {
+    const st = S.bank; const v = (id) => Number($('#' + id).value);
+    const hdr = Number(H.normalizeDigits($('#bkHeader').value)) - 1;
+    st.map = { date: v('bkMapDate'), desc: v('bkMapDesc') >= 0 ? [v('bkMapDesc')] : [], debit: v('bkMapDebit'), credit: v('bkMapCredit'), amount: v('bkMapAmount'), balance: st.map.balance };
+    st.header = Number.isInteger(hdr) && hdr >= -1 && hdr < st.rows.length ? hdr : st.header;
+    if (st.map.date < 0 || (st.map.amount < 0 && st.map.debit < 0 && st.map.credit < 0)) { toast('حدّد عمود التاريخ وعمود المبلغ (أو مدين ودائن)', '', 'error'); return; }
+    st.detected = true; bankBuild(); render();
+  },
   'modal-bg': () => closeModal(), 'close-modal': () => closeModal(),
   logout: () => logout(), theme: () => toggleTheme(),
   'open-nav': () => $('#app').classList.add('nav-open'), 'close-nav': () => $('#app').classList.remove('nav-open'),
@@ -2228,10 +2930,44 @@ document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'audUser') { S.auditFilter.user = t.value; render(); }
   if (t.id === 'audEntity') { S.auditFilter.entity = t.value; render(); }
+  if (t.id === 'hrMonth' && H.isMonth(t.value)) { S.hrMonth = t.value; render(); return; }
+  if (t.id === 'hrShowAll') { S.hrShowAll = t.checked; render(); return; }
+  // إعادة الرسم بعد انتقال التركيز للخانة التالية حتى لا يضيع مكان الكتابة
+  if (t.dataset.pr) { t.classList.remove('invalid-input'); try { payrollEditsFromDom(); setTimeout(() => render(), 0); } catch (err) { toast('قيمة غير صالحة', err.message, 'error'); } return; }
+  if (t.id === 'bkFile') { bankReadFile(t.files?.[0]); t.value = ''; return; }
+  if (t.id === 'bkAcc') { (S.bank || (S.bank = bankInit())).bankAccountId = t.value; return; }
+  if (t.id === 'bkAll' && S.bank?.items) { S.bank.items.forEach((r) => { if (!r.dup) r.include = t.checked; }); render(); return; }
+  if (t.dataset.bk && S.bank?.items) {
+    const r = S.bank.items[Number(t.dataset.i)]; if (!r) return;
+    if (t.dataset.bk === 'inc') r.include = t.checked;
+    if (t.dataset.bk === 'vat') r.vat = t.checked;
+    if (t.dataset.bk === 'acc') {
+      // تطبيق نفس التصنيف على العمليات المشابهة التي لم يغيّرها المستخدم بيده
+      r.accountId = t.value; r.touched = true;
+      const key = B.descKey(r.desc);
+      S.bank.items.forEach((x) => { if (x !== r && !x.touched && !x.dup && x.dir === r.dir && B.descKey(x.desc) === key) x.accountId = t.value; });
+    }
+    render();
+  }
 });
+// سحب ملف الكشف وإفلاته
+document.addEventListener('dragover', (e) => { const z = e.target.closest?.('#bkDrop'); if (z) { e.preventDefault(); z.classList.add('over'); } });
+document.addEventListener('dragleave', (e) => { e.target.closest?.('#bkDrop')?.classList.remove('over'); });
+document.addEventListener('drop', (e) => { const z = e.target.closest?.('#bkDrop'); if (z) { e.preventDefault(); z.classList.remove('over'); bankReadFile(e.dataTransfer?.files?.[0]); } });
 
 document.addEventListener('submit', async (e) => {
   const f = e.target;
+  if (f.id === 'hrSetForm') {
+    e.preventDefault();
+    try {
+      const bp = (id) => H.parseMoney($('#' + id).value, { allowZero: true, label: 'النسبة' });
+      const v = { empSaudiBp: bp('gEmpSa'), erSaudiBp: bp('gErSa'), erNonSaudiBp: bp('gErNon'), capH: H.parseMoney($('#gCap').value, { label: 'الحد الأعلى' }) };
+      run(f.querySelector('[type=submit]'), () => Services.saveHrSettings(v), ['حُفظت نسب التأمينات', ''], { close: false });
+    } catch (err) { toast('قيمة غير صالحة', err.message, 'error'); }
+    return;
+  }
+  if (f.id === 'payrollForm') { e.preventDefault(); return; }
+  if (f.id === 'bankForm') { e.preventDefault(); return; }
   if (f.id === 'periodForm') {
     e.preventDefault();
     const from = $('#pFrom')?.value || S.period.from, to = $('#pTo').value;
