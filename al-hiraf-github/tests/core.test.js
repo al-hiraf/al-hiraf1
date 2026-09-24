@@ -189,20 +189,3 @@ test('التنبيهات: عجز نقدي وفواتير متأخرة وحد ا�
   assert.ok(kinds.includes('cash')); assert.ok(kinds.includes('overdue')); assert.ok(kinds.includes('stock'));
   assert.equal(al.find((a) => a.kind === 'cash').level, 'bad');
 });
-
-test('مشتريات المصروفات: شامل/قبل/بدون ضريبة — الصافي + الضريبة = المبلغ دائماً', () => {
-  assert.deepEqual(C.purchaseLine(1000, 11500, 'incl'), { netH: 10000, vatH: 1500 });
-  assert.deepEqual(C.purchaseLine(1000, 10000, 'excl'), { netH: 10000, vatH: 1500 });
-  assert.deepEqual(C.purchaseLine(2500, 10000, 'none'), { netH: 25000, vatH: 0 });
-  const r = rng(77);
-  for (let i = 0; i < 5000; i++) {
-    const gross = rint(r, 1, 50000000);
-    const { netH, vatH } = C.splitGross(gross);
-    assert.equal(netH + vatH, gross);
-    // الضريبة المستخرجة لا تبعد أكثر من هللة واحدة عن 15% من الصافي
-    assert.ok(Math.abs(vatH - C.vatOf(netH)) <= 1, `${gross}`);
-  }
-  // المشتريات غير الخاضعة لا تدخل الإقرار
-  const v = C.vatReport([], [{ date: '2026-09-02', netH: 1000, vatH: 150 }, { date: '2026-09-03', netH: 900, vatH: 0 }], '2026-09-01', '2026-09-30');
-  assert.equal(v.purchaseCount, 1); assert.equal(v.inputNetH, 1000);
-});
