@@ -63,7 +63,7 @@ const OWNER = '1'; // مالك النظام: لا يُوقف ولا تُسحب �
 const PERM_GROUPS = [
   ['المبيعات', [['customer.write', 'إضافة وتعديل العملاء'], ['invoice.write', 'إنشاء مسودات الفواتير'], ['invoice.issue', 'إصدار الفواتير'], ['invoice.void', 'إلغاء فاتورة مُصدرة'], ['payment.create', 'تسجيل سندات القبض'], ['payment.reverse', 'عكس سندات القبض']]],
   ['المحاسبة', [['journal.create', 'إنشاء قيود يدوية'], ['journal.post', 'اعتماد وترحيل القيود'], ['journal.reverse', 'عكس القيود المرحّلة'], ['accounts.write', 'إضافة حسابات لدليل الحسابات']]],
-  ['المخزون والأصول', [['inventory.write', 'الأصناف والمشتريات'], ['asset.write', 'تسجيل الأصول الثابتة'], ['dep.run', 'احتساب الإهلاك الشهري']]],
+  ['المشتريات والأصول', [['inventory.write', 'فواتير المشتريات والمصروفات'], ['asset.write', 'تسجيل الأصول الثابتة'], ['dep.run', 'احتساب الإهلاك الشهري']]],
   ['الرقابة والإدارة', [['reports.export', 'تصدير وطباعة التقارير'], ['audit.view', 'عرض سجل المراجعة'], ['settings.write', 'تعديل بيانات المنشأة'], ['users.manage', 'إدارة المستخدمين والصلاحيات']]],
 ];
 const ALL_PERMS = PERM_GROUPS.flatMap((g) => g[1].map((p) => p[0]));
@@ -104,6 +104,7 @@ const userName = (u) => S.data.users.find((x) => x.id === u)?.name || (u ? 'ال
 const ACC = {
   cash: 'acc-1100', bank: 'acc-1200', ar: 'acc-1300', inv: 'acc-1400', vatIn: 'acc-1500', fa: 'acc-1600', accDep: 'acc-1690',
   ap: 'acc-2100', vatOut: 'acc-2200', capital: 'acc-3100', sales: 'acc-4100', services: 'acc-4200', cogs: 'acc-5100', depExp: 'acc-5500',
+  materials: 'acc-5600', general: 'acc-5700',
 };
 const DEFAULT_ACCOUNTS = [
   ['1100', 'النقدية في الصندوق', 'Assets', { cash: true }], ['1200', 'البنك', 'Assets', { cash: true }],
@@ -115,6 +116,7 @@ const DEFAULT_ACCOUNTS = [
   ['4100', 'إيرادات المبيعات', 'Revenue', {}], ['4200', 'إيرادات الخدمات والمقاولات', 'Revenue', {}],
   ['5100', 'تكلفة المبيعات', 'Expenses', {}], ['5200', 'الرواتب والأجور', 'Expenses', {}], ['5300', 'الإيجار', 'Expenses', {}],
   ['5400', 'الكهرباء والمياه', 'Expenses', {}], ['5500', 'مصروف الإهلاك', 'Expenses', {}],
+  ['5600', 'مواد ومشتريات المشاريع', 'Expenses', {}], ['5700', 'مصروفات عامة ونثرية', 'Expenses', {}],
 ];
 const ACC_TYPES = { Assets: 'الأصول', Liabilities: 'الخصوم', Equity: 'حقوق الملكية', Revenue: 'الإيرادات', Expenses: 'المصروفات' };
 const PAY_METHODS = { cash: 'نقداً', bank_transfer: 'تحويل بنكي', card: 'بطاقة / مدى', check: 'شيك' };
@@ -305,7 +307,7 @@ function fbError(e) {
    الحالة العامة
    ===================================================================== */
 function emptyData() {
-  return { accounts: [], customers: [], items: [], stockMoves: [], purchases: [], invoices: [], payments: [], journals: [], assets: [], depRuns: [], users: [], audit: [], company: {}, counters: {}, accBal: new Map(), alerts: [], recon: {} };
+  return { accounts: [], customers: [], items: [], stockMoves: [], purchases: [], catalog: [], invoices: [], payments: [], journals: [], assets: [], depRuns: [], users: [], audit: [], company: {}, counters: {}, accBal: new Map(), alerts: [], recon: {} };
 }
 const S = {
   db: null,
@@ -313,7 +315,7 @@ const S = {
   entering: null,      // وعد الدخول الجاري (يمنع التكرار)
   weakPassword: false,
   section: 'dashboard',
-  tabs: { reports: 'income', inventory: 'items', journal: 'all', invoices: 'all', customers: 'active' },
+  tabs: { reports: 'income', inventory: 'purchases', journal: 'all', invoices: 'all', customers: 'active' },
   q: {},
   period: { from: firstOfYear(), to: todayISO() },
   auditFilter: { user: '', entity: '' },
@@ -700,8 +702,56 @@ const Services = {
     });
     return name;
   },
-  /** فاتورة مشتريات: من حـ/ المخزون + ضريبة المدخلات  إلى حـ/ الصندوق/البنك/الموردين */
+  /**
+   * فاتورة مشتريات (مصروفات) — الطريقة المبسطة:
+   *  يكتب المستخدم اسم الصنف والكمية والسعر فقط؛ الصنف يُحفظ تلقائياً في قائمة الأصناف
+   *  (مشتقة من الفواتير) ولا يدخل المخزون.
+   *  القيد: من حـ/ المصروف (حسب تصنيف كل بند) + ضريبة المدخلات  إلى حـ/ الصندوق أو البنك أو الموردين
+   */
   async recordPurchase(f) {
+    need('inventory.write');
+    if (![ACC.cash, ACC.bank, ACC.ap].includes(f.payAccountId)) throw new H.InputError('اختر طريقة السداد');
+    if (!H.isISODate(f.date)) throw new H.InputError('تاريخ الفاتورة غير صالح');
+    if (!['incl', 'excl', 'none'].includes(f.vatMode)) throw new H.InputError('اختر طريقة الضريبة');
+    const supplier = H.cleanText(f.supplier, 120) || 'مورد نقدي';
+    if (f.payAccountId === ACC.ap && supplier === 'مورد نقدي') throw new H.InputError('اكتب اسم المورد للشراء الآجل');
+    if (!Array.isArray(f.lines) || !f.lines.length || f.lines.length > 40) throw new H.InputError('عدد البنود من 1 إلى 40');
+    const DEFAULT_EXP = { [ACC.materials]: DEFAULT_ACCOUNTS.find((a) => a[0] === '5600'), [ACC.general]: DEFAULT_ACCOUNTS.find((a) => a[0] === '5700') };
+    const lines = f.lines.map((l, k) => {
+      const name = H.cleanText(l.name, 100);
+      if (!name) throw new H.InputError(`اكتب اسم الصنف في البند ${k + 1}`);
+      if (!Number.isSafeInteger(l.qtyM) || l.qtyM <= 0) throw new H.InputError(`الكمية غير صالحة في البند ${k + 1}`);
+      if (!Number.isSafeInteger(l.priceH) || l.priceH <= 0) throw new H.InputError(`السعر غير صالح في البند ${k + 1}`);
+      const acc = S.data.accounts.find((a) => a.id === l.accountId);
+      const okAcc = acc ? acc.type === 'Expenses' && !acc.archived && ![ACC.cogs, ACC.depExp].includes(acc.id) : !!DEFAULT_EXP[l.accountId];
+      if (!okAcc) throw new H.InputError(`اختر التصنيف في البند ${k + 1}`);
+      return { name, accountId: l.accountId, qtyM: l.qtyM, priceH: l.priceH, ...H.purchaseLine(l.qtyM, l.priceH, f.vatMode) };
+    });
+    const netH = H.sumInts(lines.map((l) => l.netH)), vatH = H.sumInts(lines.map((l) => l.vatH));
+    if (netH <= 0) throw new H.InputError('إجمالي الفاتورة صفر');
+    // تجميع المدين حسب الحساب (سطر واحد لكل تصنيف)
+    const byAcc = new Map();
+    lines.forEach((l) => byAcc.set(l.accountId, (byAcc.get(l.accountId) || 0) + l.netH));
+    return S.db.tx(async (t) => {
+      // حسابات التصنيف الافتراضية تُنشأ تلقائياً إن لم تكن موجودة (للأنظمة المهيأة قبل إضافتها)
+      const missing = [];
+      for (const id of byAcc.keys()) if (DEFAULT_EXP[id] && !(await t.get('accounts', id))) missing.push(id);
+      if (missing.length && !can('accounts.write')) throw new H.InputError('حساب التصنيف غير موجود — اطلب من المدير فتح الشاشة مرة واحدة أو إضافته');
+      const counters = await readCounters(t);
+      const no = 'PU-' + pad(bump(counters, 'purchase'), 5);
+      const pid = t.newId('purchases');
+      const meta = audit(t, 'create', 'purchase', pid, `فاتورة مشتريات ${no} من ${supplier} بإجمالي ${H.fmtMoney(netH + vatH)} (${lines.length} بند)`);
+      for (const id of missing) { const [n, name, type, flags] = DEFAULT_EXP[id]; t.set('accounts', id, { number: n, name, type, ...flags, system: true, archived: false, createdAt: nowISO(), ...meta }); }
+      const j = writeJournal(t, counters, { date: f.date, memo: `مشتريات ${no} — ${supplier}`, source: 'purchase', sourceId: pid,
+        lines: [...[...byAcc].map(([accountId, debitH]) => ({ accountId, debitH })), { accountId: ACC.vatIn, debitH: vatH }, { accountId: f.payAccountId, creditH: netH + vatH }] }, meta);
+      t.set('purchases', pid, { no, kind: 'expense', supplier, supplierVat: f.supplierVat || '', ref: H.cleanText(f.ref, 40), date: f.date, payAccountId: f.payAccountId, vatMode: f.vatMode,
+        lines, netH, vatH, totalH: netH + vatH, journalIds: [j.id], createdBy: S.user.username, createdAt: nowISO(), ...meta });
+      t.set('settings', 'counters', { ...counters, auditId: meta.auditId });
+      return no;
+    });
+  },
+  /** (نظام سابق) شراء أصناف مخزنية للبيع: من حـ/ المخزون + ضريبة المدخلات  إلى حـ/ الصندوق/البنك/الموردين */
+  async recordStockPurchase(f) {
     need('inventory.write');
     if (![ACC.cash, ACC.bank, ACC.ap].includes(f.payAccountId)) throw new H.InputError('اختر طريقة السداد');
     if (!H.isISODate(f.date)) throw new H.InputError('تاريخ الفاتورة غير صالح');
@@ -791,6 +841,24 @@ function pendingDepMonths() {
 /* =====================================================================
    5) البيانات المشتقة
    ===================================================================== */
+/** قائمة الأصناف تُبنى تلقائياً من بنود فواتير المشتريات — لا حاجة لتعريف الصنف مسبقاً */
+const itemKey = (name) => H.normalizeDigits(String(name || '')).replace(/\s+/g, ' ').trim().toLowerCase();
+function purchaseCatalog(purchases) {
+  const map = new Map();
+  // purchases مرتبة من الأحدث؛ نمر عليها من الأقدم حتى يبقى «الأخير» هو الأحدث
+  for (let i = purchases.length - 1; i >= 0; i--) {
+    const p = purchases[i];
+    for (const l of p.lines || []) {
+      if (!l.name) continue;
+      const k = itemKey(l.name);
+      const c = map.get(k) || { key: k, name: l.name, count: 0, qtyM: 0, netH: 0 };
+      c.name = l.name; c.count += 1; c.qtyM += l.qtyM || 0; c.netH += l.netH || 0;
+      c.accountId = l.accountId; c.lastPriceH = l.priceH; c.lastVatMode = p.vatMode; c.lastDate = p.date; c.lastSupplier = p.supplier;
+      map.set(k, c);
+    }
+  }
+  return [...map.values()].sort((a, b) => String(b.lastDate).localeCompare(String(a.lastDate)) || a.name.localeCompare(b.name, 'ar'));
+}
 function derive(st) {
   const arr = (c) => Object.entries(st[c] || {}).map(([id, v]) => ({ id, ...v }));
   const today = todayISO();
@@ -822,8 +890,9 @@ function derive(st) {
     faSubH: H.sumInts(assets.map((a) => a.costH)), faGlH: accBal.get(ACC.fa) || 0,
     depSubH: H.sumInts(depRuns.map((r) => r.totalH)), depGlH: 0 - (accBal.get(ACC.accDep) || 0),
   };
+  const catalog = purchaseCatalog(purchases);
   return {
-    accounts, journals, customers, items, stockMoves, purchases, invoices, payments, assets, depRuns, users, audit: auditLog,
+    accounts, journals, customers, items, stockMoves, purchases, catalog, invoices, payments, assets, depRuns, users, audit: auditLog,
     company: (st.settings || {}).company || {}, counters: (st.settings || {}).counters || {}, accBal, alerts, recon,
   };
 }
@@ -964,9 +1033,25 @@ function onData(raw) {
   updateMe();
   if (can('audit.view') !== S.auditSub) { startSync(); return; }
   S.loaded = true;
+  ensureNewAccounts();
   $('#companyName').textContent = S.data.company.name || 'للمقاولات';
   if (document.activeElement?.closest('form[data-keep]')) { renderNav(); return; } // لا نمسح نموذجاً أثناء الكتابة
   render();
+}
+/** ترقية: إضافة حسابات المصروف الجديدة (5600، 5700) للأنظمة المهيأة قبلها — مرة واحدة بواسطة من يملك صلاحية الحسابات */
+let ensuring = false;
+function ensureNewAccounts() {
+  if (ensuring || !S.data.accounts.length || !can('accounts.write')) return;
+  const missing = DEFAULT_ACCOUNTS.filter(([n]) => !S.data.accounts.some((a) => a.id === 'acc-' + n));
+  if (!missing.length) return;
+  ensuring = true;
+  S.db.tx(async (t) => {
+    const need = [];
+    for (const row of missing) if (!(await t.get('accounts', 'acc-' + row[0]))) need.push(row);
+    if (!need.length) return;
+    const meta = audit(t, 'create', 'system', 'upgrade-accounts', `ترقية دليل الحسابات: ${need.map((r) => r[0] + ' ' + r[1]).join('، ')}`);
+    for (const [n, name, type, flags] of need) t.set('accounts', 'acc-' + n, { number: n, name, type, ...flags, system: true, archived: false, createdAt: nowISO(), ...meta });
+  }).catch((e) => console.warn('ترقية الحسابات', e)); // محاولة واحدة لكل جلسة
 }
 /** إشعار لحظي عندما يضيف مستخدم آخر شيئاً (يصل لكل المستخدمين) */
 const LIVE_NOTES = {
@@ -991,8 +1076,8 @@ const SECTIONS = {
   invoices: { title: 'الفواتير', icon: 'file', group: 'المبيعات', sub: 'فواتير ضريبية بضريبة القيمة المضافة 15%', render: renderInvoices },
   customers: { title: 'العملاء', icon: 'users', group: 'المبيعات', sub: 'بيانات العملاء وأرصدتهم', render: renderCustomers },
   payments: { title: 'سندات القبض', icon: 'wallet', group: 'المبيعات', sub: 'المبالغ المحصّلة من العملاء', render: renderPayments },
-  inventory: { title: 'المخزون والمشتريات', icon: 'box', group: 'المخزون والأصول', sub: 'تقييم FIFO أو المتوسط المرجح', render: renderInventory },
-  assets: { title: 'الأصول الثابتة', icon: 'building', group: 'المخزون والأصول', sub: 'الإهلاك بطريقة القسط الثابت', render: renderAssets },
+  inventory: { title: 'المشتريات والمصروفات', icon: 'box', group: 'المشتريات والأصول', sub: 'سجّل فاتورة المورد فقط — الأصناف تُحفظ تلقائياً', render: renderInventory },
+  assets: { title: 'الأصول الثابتة', icon: 'building', group: 'المشتريات والأصول', sub: 'الإهلاك بطريقة القسط الثابت', render: renderAssets },
   journal: { title: 'القيود اليومية', icon: 'book', group: 'المحاسبة', sub: 'قيد مزدوج متزن — المُنشئ لا يعتمد قيده', render: renderJournal },
   accounts: { title: 'دليل الحسابات', icon: 'layers', group: 'المحاسبة', sub: 'الأرصدة من القيود المرحّلة', render: renderAccounts },
   reports: { title: 'التقارير المالية', icon: 'chart', group: 'المحاسبة', sub: 'قائمة الدخل والميزانية والضريبة والمطابقات', render: renderReports },
@@ -1196,15 +1281,30 @@ function renderPayments() {
 /* =====================================================================
    المخزون
    ===================================================================== */
+const accName = (id) => { const a = S.data.accounts.find((x) => x.id === id); if (a) return a.name; const d = DEFAULT_ACCOUNTS.find((x) => 'acc-' + x[0] === id); return d ? d[1] : '—'; };
+const PAY_LABEL = { [ACC.cash]: 'نقداً (الصندوق)', [ACC.bank]: 'البنك', [ACC.ap]: 'آجل' };
+const VAT_MODE_LABEL = { incl: 'شامل الضريبة', excl: 'قبل الضريبة +15%', none: 'غير خاضع للضريبة' };
+const VAT_MODE_SHORT = { incl: 'شامل الضريبة', excl: '+15% ضريبة', none: 'بدون ضريبة' };
 function renderInventory() {
+  const legacy = S.data.items.length > 0; // أصناف مخزون من النظام السابق (إن وُجدت)
+  if (!['purchases', 'catalog', 'items', 'moves'].includes(S.tabs.inventory) || (!legacy && ['items', 'moves'].includes(S.tabs.inventory))) S.tabs.inventory = 'purchases';
   const tab = S.tabs.inventory;
-  const head = `<div class="toolbar">${btn('new-item', 'صنف جديد', { perm: 'inventory.write', cls: 'btn-ghost' })}${btn('new-purchase', 'فاتورة مشتريات', { perm: 'inventory.write' })}
-    ${tabs('inventory', [['items', 'الأصناف'], ['purchases', 'المشتريات'], ['moves', 'حركات المخزون']])}</div>`;
-  if (tab === 'purchases') {
-    const l = S.data.purchases;
-    return head + `<div class="card">${l.length ? `<div class="table-wrap"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>المورد</th><th class="hide-sm">مرجع المورد</th><th class="money">الصافي</th><th class="money">الضريبة</th><th class="money">الإجمالي</th></tr></thead><tbody>
-      ${l.map((p) => `<tr><td class="num start">${esc(p.no)}</td><td class="nowrap">${fmtDate(p.date)}</td><td class="cell-main">${esc(p.supplier)}</td><td class="hide-sm">${esc(p.ref || '—')}</td><td class="money">${M(p.netH)}</td><td class="money">${M(p.vatH)}</td><td class="money"><b>${M(p.totalH)}</b></td></tr>`).join('')}
-      </tbody></table></div>` : empty('box', 'لا توجد مشتريات')}</div>`;
+  const month = thisMonth();
+  const mp = S.data.purchases.filter((p) => String(p.date).startsWith(month));
+  const head = `<div class="toolbar">${btn('new-purchase', 'فاتورة مشتريات', { perm: 'inventory.write' })}
+    ${tabs('inventory', [['purchases', 'فواتير المشتريات'], ['catalog', `الأصناف (${S.data.catalog.length})`], ...(legacy ? [['items', 'مخزون سابق'], ['moves', 'حركات المخزون']] : [])])}</div>
+    <div class="card kpis-card"><div class="kpis">
+      <div class="kpi hero"><div class="kpi-label">مشتريات الشهر (قبل الضريبة)</div><div class="kpi-value">${M(H.sumInts(mp.map((p) => p.netH)))}<small>ر.س</small></div><div class="kpi-meta">${esc(fmtMonth(month))} · ${mp.length} فاتورة</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot ok-bg"></span>ضريبة المدخلات للشهر</div><div class="kpi-value">${M(H.sumInts(mp.map((p) => p.vatH)))}<small>ر.س</small></div><div class="kpi-meta">تُخصم في الإقرار الضريبي</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot warn-bg"></span>مستحق للموردين (آجل)</div><div class="kpi-value">${M(S.data.accBal.get(ACC.ap) || 0)}<small>ر.س</small></div><div class="kpi-meta">رصيد حساب الموردين</div></div>
+      <div class="kpi"><div class="kpi-label"><span class="dot"></span>الأصناف المسجلة</div><div class="kpi-value">${S.data.catalog.length}</div><div class="kpi-meta">تُضاف تلقائياً من الفواتير</div></div>
+    </div></div>`;
+  if (tab === 'catalog') {
+    const l = S.data.catalog;
+    return head + `<div class="card">${l.length ? `<div class="table-wrap"><table><thead><tr><th>الصنف</th><th class="hide-sm">التصنيف</th><th class="money">مرات الشراء</th><th class="money hide-sm">إجمالي الكمية</th><th class="money">آخر سعر</th><th class="money">إجمالي المصروف</th><th class="hide-sm">آخر مورد</th></tr></thead><tbody>
+      ${l.map((c) => `<tr><td><div class="cell-main">${esc(c.name)}</div><div class="cell-sub">آخر شراء ${fmtDate(c.lastDate)}</div></td><td class="hide-sm">${esc(accName(c.accountId))}</td><td class="money">${c.count}</td><td class="money hide-sm">${Q(c.qtyM)}</td><td class="money">${M(c.lastPriceH)}</td><td class="money"><b>${M(c.netH)}</b></td><td class="hide-sm">${esc(c.lastSupplier || '—')}</td></tr>`).join('')}
+      <tr class="total-row"><td colspan="5">الإجمالي (قبل الضريبة)</td><td class="money">${M(H.sumInts(l.map((c) => c.netH)))}</td><td class="hide-sm"></td></tr>
+      </tbody></table></div>` : empty('box', 'لا توجد أصناف بعد', 'كل صنف تكتبه في فاتورة مشتريات يُضاف هنا تلقائياً.')}</div>`;
   }
   if (tab === 'moves') {
     const name = (id) => S.data.items.find((i) => i.id === id)?.name || '—';
@@ -1213,14 +1313,20 @@ function renderInventory() {
       ${l.map((m) => `<tr><td class="nowrap">${fmtDate(m.date)}</td><td class="cell-main">${esc(name(m.itemId))}</td><td>${m.type === 'in' ? '<span class="pill ok">وارد</span>' : '<span class="pill warn">منصرف</span>'}</td><td class="num start">${esc(m.refNo || '')}</td><td class="money">${Q(m.qtyM)}</td><td class="money">${M(m.costH)}</td></tr>`).join('')}
       </tbody></table></div>` : empty('box', 'لا توجد حركات')}</div>`;
   }
-  const l = S.data.items.filter((i) => !i.archived);
-  return head + `<div class="card">${l.length ? `<div class="table-wrap"><table><thead><tr><th>الرمز</th><th>الصنف</th><th class="hide-sm">التقييم</th><th class="money">الكمية</th><th class="money">متوسط التكلفة</th><th class="money">القيمة</th><th><span class="sr">إجراءات</span></th></tr></thead><tbody>
-    ${l.map((i) => { const low = (i.reorderM || 0) > 0 && (i.qtyM || 0) <= i.reorderM; return `<tr class="${low ? 'row-warn' : ''}">
-      <td class="num start"><b>${esc(i.sku)}</b></td><td><div class="cell-main">${esc(i.name)}</div><div class="cell-sub">${esc(i.unit)}${low ? ' · <b class="warn-text">وصل حد الطلب</b>' : ''}</div></td>
-      <td class="hide-sm">${i.method === 'FIFO' ? 'FIFO' : 'متوسط مرجح'}</td><td class="money">${Q(i.qtyM)}</td><td class="money">${M(H.unitCostH(stockState(i)))}</td><td class="money"><b>${M(i.valueH)}</b></td>
-      <td>${btn('edit-item', '', { cls: 'btn-quiet btn-sm icon-btn', ic: 'edit', data: { id: i.id }, title: 'تعديل', perm: 'inventory.write' })}</td></tr>`; }).join('')}
-    <tr class="total-row"><td colspan="5">إجمالي قيمة المخزون</td><td class="money">${M(H.sumInts(l.map((i) => i.valueH || 0)))}</td><td></td></tr>
-    </tbody></table></div>` : empty('box', 'لا توجد أصناف', 'أضف الأصناف ثم سجّل فواتير المشتريات.')}</div>`;
+  if (tab === 'items') {
+    const l = S.data.items.filter((i) => !i.archived);
+    return head + `<div class="card">${l.length ? `<div class="table-wrap"><table><thead><tr><th>الرمز</th><th>الصنف</th><th class="hide-sm">التقييم</th><th class="money">الكمية</th><th class="money">متوسط التكلفة</th><th class="money">القيمة</th><th><span class="sr">إجراءات</span></th></tr></thead><tbody>
+      ${l.map((i) => `<tr><td class="num start"><b>${esc(i.sku)}</b></td><td><div class="cell-main">${esc(i.name)}</div><div class="cell-sub">${esc(i.unit)}</div></td>
+        <td class="hide-sm">${i.method === 'FIFO' ? 'FIFO' : 'متوسط مرجح'}</td><td class="money">${Q(i.qtyM)}</td><td class="money">${M(H.unitCostH(stockState(i)))}</td><td class="money"><b>${M(i.valueH)}</b></td>
+        <td>${btn('edit-item', '', { cls: 'btn-quiet btn-sm icon-btn', ic: 'edit', data: { id: i.id }, title: 'تعديل', perm: 'inventory.write' })}</td></tr>`).join('')}
+      <tr class="total-row"><td colspan="5">إجمالي قيمة المخزون</td><td class="money">${M(H.sumInts(l.map((i) => i.valueH || 0)))}</td><td></td></tr>
+      </tbody></table></div>` : empty('box', 'لا توجد أصناف مخزنية')}</div>`;
+  }
+  const l = S.data.purchases;
+  const summary = (p) => { const n = (p.lines || []).map((x) => x.name).filter(Boolean); return n.length ? esc(n.slice(0, 2).join('، ')) + (n.length > 2 ? ` <span class="cell-sub">+${n.length - 2}</span>` : '') : '<span class="cell-sub">أصناف مخزنية</span>'; };
+  return head + `<div class="card">${l.length ? `<div class="table-wrap"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>المورد</th><th class="hide-sm">الأصناف</th><th class="hide-sm">السداد</th><th class="money hide-sm">الضريبة</th><th class="money">الإجمالي</th></tr></thead><tbody>
+    ${l.map((p) => `<tr><td class="num start"><button type="button" class="link" data-action="view-purchase" data-id="${esc(p.id)}">${esc(p.no)}</button></td><td class="nowrap">${fmtDate(p.date)}</td><td><div class="cell-main">${esc(p.supplier)}</div>${p.ref ? `<div class="cell-sub">فاتورة المورد ${esc(p.ref)}</div>` : ''}</td><td class="hide-sm clamp">${summary(p)}</td><td class="hide-sm">${esc(PAY_LABEL[p.payAccountId] || '—')}</td><td class="money hide-sm">${M(p.vatH)}</td><td class="money"><b>${M(p.totalH)}</b></td></tr>`).join('')}
+    </tbody></table></div>` : empty('box', 'لا توجد فواتير مشتريات', 'اضغط «فاتورة مشتريات»، اكتب الأصناف والأسعار، واحفظ — هذا كل شيء.', btn('new-purchase', 'فاتورة مشتريات', { perm: 'inventory.write' }))}</div>`;
 }
 
 /* =====================================================================
@@ -1799,61 +1905,104 @@ function itemModal(id = '') {
   }));
 }
 
-/* ---------- فاتورة المشتريات ---------- */
+/* ---------- فاتورة المشتريات (مبسطة: اكتب الصنف والسعر فقط) ---------- */
 let pdraft = null;
+const PU_PREF = 'hiraf.puVatMode';
+const prefGet = (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } };
+const prefSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* تجاهل */ } };
+/** تصنيفات المصروف المتاحة: مواد المشاريع أولاً (الافتراضي) ثم باقي حسابات المصروفات */
+function expenseAccounts() {
+  const list = S.data.accounts.filter((a) => a.type === 'Expenses' && !a.archived && ![ACC.cogs, ACC.depExp].includes(a.id));
+  for (const id of [ACC.general, ACC.materials]) if (!list.some((a) => a.id === id)) { const d = DEFAULT_ACCOUNTS.find((x) => 'acc-' + x[0] === id); list.push({ id, number: d[0], name: d[1] }); }
+  const rank = (a) => (a.id === ACC.materials ? 0 : a.id === ACC.general ? 1 : 2);
+  return list.sort((x, y) => rank(x) - rank(y) || String(x.number).localeCompare(String(y.number)));
+}
+const newPLine = () => ({ name: '', accountId: ACC.materials, qty: '1', price: '' });
 function purchaseModal() {
-  const items = S.data.items.filter((i) => !i.archived);
-  if (!items.length) { openModal('فاتورة مشتريات', empty('box', 'أضف صنفاً أولاً'), cancelBtn + btn('new-item', 'صنف جديد', { perm: 'inventory.write' })); return; }
-  pdraft = { lines: [{ itemId: '', qty: '', cost: '' }] };
+  pdraft = { lines: [newPLine()] };
+  const suppliers = [...new Set(S.data.purchases.map((p) => p.supplier).filter((x) => x && x !== 'مورد نقدي'))].slice(0, 200);
+  const mode = prefGet(PU_PREF, 'incl');
   openModal('فاتورة مشتريات', `<form id="purchaseForm" novalidate>
     <div class="form-grid three">
-      <div class="field"><label for="puSupplier">المورد *</label><input class="input" id="puSupplier" maxlength="120"></div>
-      <div class="field"><label for="puVatNo">الرقم الضريبي للمورد</label><input class="input" id="puVatNo" maxlength="15" dir="ltr" inputmode="numeric"></div>
-      <div class="field"><label for="puRef">رقم فاتورة المورد</label><input class="input" id="puRef" maxlength="40" dir="ltr"></div>
+      <div class="field"><label for="puSupplier">المورد</label><input class="input" id="puSupplier" maxlength="120" list="puSuppliers" placeholder="اختياري للشراء النقدي" autocomplete="off"><datalist id="puSuppliers">${suppliers.map((x) => `<option value="${esc(x)}">`).join('')}</datalist></div>
       <div class="field"><label for="puDate">التاريخ</label><input class="input" id="puDate" type="date" value="${todayISO()}"></div>
-      <div class="field"><label for="puPay">السداد</label><select class="select" id="puPay">${cashOptions(true)}</select></div>
-      <label class="check"><input type="checkbox" id="puVat" checked> خاضعة لضريبة 15% (مدخلات)</label>
+      <div class="field"><label for="puPay">السداد</label><select class="select" id="puPay"><option value="${ACC.cash}">نقداً (الصندوق)</option><option value="${ACC.bank}">البنك / تحويل / مدى</option><option value="${ACC.ap}">آجل (على المورد)</option></select></div>
+      <div class="field span-3"><label>الأسعار المكتوبة</label><div class="seg" role="radiogroup" id="puVatSeg">
+        ${Object.entries(VAT_MODE_SHORT).map(([k, v]) => `<label class="seg-opt"><input type="radio" name="puVat" value="${k}" ${k === mode ? 'checked' : ''}><span>${esc(v)}</span></label>`).join('')}</div></div>
     </div>
-    <div class="plines" id="puLines"></div>
-    <div class="lines-foot"><button type="button" class="btn btn-ghost btn-sm" data-action="add-pline">${icon('plus')}بند</button><div class="totals" id="puTotals"></div></div>
-  </form>`, cancelBtn + submitBtn('purchaseForm', 'تسجيل المشتريات'), { xwide: true });
+    <datalist id="puNames">${S.data.catalog.map((c) => `<option value="${esc(c.name)}">`).join('')}</datalist>
+    <div class="plines exp" id="puLines"></div>
+    <div class="lines-foot"><button type="button" class="btn btn-ghost btn-sm" data-action="add-pline">${icon('plus')}صنف آخر</button><div class="totals" id="puTotals"></div></div>
+    <details class="more"><summary>بيانات إضافية (اختياري): الرقم الضريبي ورقم فاتورة المورد</summary><div class="form-grid">
+      <div class="field"><label for="puVatNo">الرقم الضريبي للمورد</label><input class="input" id="puVatNo" maxlength="15" dir="ltr" inputmode="numeric"></div>
+      <div class="field"><label for="puRef">رقم فاتورة المورد</label><input class="input" id="puRef" maxlength="40" dir="ltr"></div></div></details>
+  </form>`, cancelBtn + submitBtn('purchaseForm', 'حفظ الفاتورة'), { xwide: true });
   drawPLines();
-  $('#puVat').addEventListener('change', drawPTotals);
+  $('#puVatSeg').addEventListener('change', (e) => { prefSet(PU_PREF, e.target.value); drawPTotals(); });
+  setTimeout(() => document.querySelector('[data-pl="0"][data-key="name"]')?.focus(), 50);
   $('#purchaseForm').addEventListener('submit', formGuard(() => {
-    const supplier = field('puSupplier', (v) => { const s = H.cleanText(v, 120); if (!s) throw new H.InputError('اسم المورد مطلوب'); return s; });
     const date = field('puDate', (v) => H.parseDate(v));
     const vatNo = H.normalizeDigits($('#puVatNo').value);
     if (vatNo && !/^3\d{13}3$/.test(vatNo)) throw new H.InputError('الرقم الضريبي للمورد 15 رقماً يبدأ وينتهي بـ 3');
     const lines = parsePLines(true);
-    if (new Set(lines.map((l) => l.itemId)).size > MAX_GOODS_LINES) throw new H.InputError(`الحد الأقصى ${MAX_GOODS_LINES} أصناف مختلفة في الفاتورة`);
-    run(document.querySelector('[form=purchaseForm]'), () => Services.recordPurchase({ supplier, supplierVat: vatNo, ref: $('#puRef').value, date, payAccountId: $('#puPay').value, withVat: $('#puVat').checked, lines }),
-      ['سُجّلت المشتريات', (no) => no]);
+    run(document.querySelector('[form=purchaseForm]'), () => Services.recordPurchase({ supplier: $('#puSupplier').value, supplierVat: vatNo, ref: $('#puRef').value, date, payAccountId: $('#puPay').value, vatMode: puMode(), lines }),
+      ['حُفظت فاتورة المشتريات', (no) => no]);
   }));
 }
+const puMode = () => document.querySelector('input[name=puVat]:checked')?.value || 'incl';
 function drawPLines() {
-  const items = S.data.items.filter((i) => !i.archived);
-  $('#puLines').innerHTML = '<div class="pline head"><span>الصنف</span><span>الكمية</span><span>تكلفة الوحدة</span><span class="lt">الصافي</span><span></span></div>' +
-    pdraft.lines.map((l, k) => `<div class="pline"><select class="select" data-pl="${k}" data-key="itemId" aria-label="الصنف"><option value="">اختر الصنف</option>${optionList(items, l.itemId, (i) => `${i.sku} — ${i.name}`)}</select>
+  const accs = expenseAccounts();
+  $('#puLines').innerHTML = '<div class="pline head"><span>الصنف</span><span>التصنيف</span><span>الكمية</span><span>السعر</span><span class="lt">المبلغ</span><span></span></div>' +
+    pdraft.lines.map((l, k) => `<div class="pline"><input class="input" data-pl="${k}" data-key="name" value="${esc(l.name)}" list="puNames" maxlength="100" placeholder="مثال: أسمنت، ديزل، مسامير…" aria-label="اسم الصنف" autocomplete="off">
+      <select class="select" data-pl="${k}" data-key="accountId" aria-label="التصنيف">${optionList(accs, l.accountId, (a) => a.name)}</select>
       <input class="input num" data-pl="${k}" data-key="qty" value="${esc(l.qty)}" inputmode="decimal" aria-label="الكمية">
-      <input class="input num" data-pl="${k}" data-key="cost" value="${esc(l.cost)}" inputmode="decimal" placeholder="0.00" aria-label="تكلفة الوحدة قبل الضريبة">
+      <input class="input num" data-pl="${k}" data-key="price" value="${esc(l.price)}" inputmode="decimal" placeholder="0.00" aria-label="سعر الوحدة">
       <span class="lt num" data-plt="${k}"></span>
-      <button type="button" class="btn btn-quiet icon-btn btn-sm" data-action="remove-pline" data-k="${k}" aria-label="حذف" ${pdraft.lines.length === 1 ? 'disabled' : ''}>${icon('trash')}</button></div>`).join('');
+      <button type="button" class="btn btn-quiet icon-btn btn-sm" data-action="remove-pline" data-k="${k}" aria-label="حذف البند" ${pdraft.lines.length === 1 ? 'disabled' : ''}>${icon('trash')}</button></div>`).join('');
   drawPTotals();
 }
+/** strict=true عند الحفظ: يرمي الخطأ؛ وإلا يعيد null للبند غير المكتمل. البنود الفارغة تماماً تُتجاهل */
 function parsePLines(strict) {
-  return pdraft.lines.map((l, k) => {
+  const out = [];
+  pdraft.lines.forEach((l, k) => {
+    const blank = !l.name.trim() && !String(l.price).trim();
+    if (blank) { out.push(null); return; }
     try {
-      if (!l.itemId) throw new H.InputError(`اختر الصنف في البند ${k + 1}`);
-      return { itemId: l.itemId, qtyM: H.parseQty(l.qty, { label: `كمية البند ${k + 1}` }), unitCostH: H.parseMoney(l.cost, { label: `تكلفة البند ${k + 1}` }) };
-    } catch (e) { if (strict) throw e; return null; }
+      const name = H.cleanText(l.name, 100);
+      if (!name) throw new H.InputError(`اكتب اسم الصنف في البند ${k + 1}`);
+      out.push({ name, accountId: l.accountId, qtyM: H.parseQty(l.qty || '1', { label: `كمية البند ${k + 1}` }), priceH: H.parseMoney(l.price, { label: `سعر البند ${k + 1}` }) });
+    } catch (e) { if (strict) throw e; out.push(null); }
   });
+  if (strict) { const r = out.filter(Boolean); if (!r.length) throw new H.InputError('اكتب صنفاً واحداً على الأقل مع سعره'); return r; }
+  return out;
 }
 function drawPTotals() {
-  const p = parsePLines(false);
-  p.forEach((l, k) => { const el = document.querySelector(`[data-plt="${k}"]`); if (el) el.textContent = l ? H.fmtMoney(H.lineNet(l.qtyM, l.unitCostH)) : '—'; });
-  const nets = p.filter(Boolean).map((l) => H.lineNet(l.qtyM, l.unitCostH));
-  const net = H.sumInts(nets), vat = $('#puVat')?.checked ? H.sumInts(nets.map((n) => H.vatOf(n))) : 0;
-  $('#puTotals').innerHTML = `<div><span class="cell-sub">الصافي</span>${M(net)}</div><div><span class="cell-sub">ضريبة المدخلات</span>${M(vat)}</div><div class="grand"><span>الإجمالي</span><span>${M(net + vat)} ر.س</span></div>`;
+  const mode = puMode();
+  const p = parsePLines(false).map((l) => (l ? { ...l, ...H.purchaseLine(l.qtyM, l.priceH, mode) } : null));
+  p.forEach((l, k) => { const el = document.querySelector(`[data-plt="${k}"]`); if (el) el.textContent = l ? H.fmtMoney(l.netH + l.vatH) : '—'; });
+  const ok = p.filter(Boolean);
+  const net = H.sumInts(ok.map((l) => l.netH)), vat = H.sumInts(ok.map((l) => l.vatH));
+  $('#puTotals').innerHTML = `<div><span class="cell-sub">قبل الضريبة</span>${M(net)}</div><div><span class="cell-sub">ضريبة المدخلات</span>${M(vat)}</div><div class="grand"><span>الإجمالي</span><span>${M(net + vat)} ر.س</span></div>`;
+}
+/** عند كتابة اسم صنف سبق شراؤه: يُكمل التصنيف وآخر سعر تلقائياً */
+function autofillPLine(k, el) {
+  const c = S.data.catalog.find((x) => x.key === itemKey(pdraft.lines[k].name));
+  if (!c) return;
+  const line = pdraft.lines[k], row = el.closest('.pline');
+  if (c.accountId && expenseAccounts().some((a) => a.id === c.accountId)) { line.accountId = c.accountId; row.querySelector('[data-key="accountId"]').value = c.accountId; }
+  if (!String(line.price).trim() && c.lastPriceH && (c.lastVatMode || 'excl') === puMode()) { line.price = H.moneyInput(c.lastPriceH); row.querySelector('[data-key="price"]').value = line.price; }
+}
+function viewPurchase(id) {
+  const p = S.data.purchases.find((x) => x.id === id); if (!p) return;
+  const j = S.data.journals.find((x) => x.id === (p.journalIds || [])[0]);
+  const rows = (p.lines || []).map((l) => `<tr><td class="cell-main">${esc(l.name || (S.data.items.find((i) => i.id === l.itemId)?.name) || '—')}</td><td class="hide-sm">${esc(l.accountId ? accName(l.accountId) : 'المخزون')}</td><td class="money">${Q(l.qtyM)}</td><td class="money">${M(l.priceH ?? l.unitCostH)}</td><td class="money">${M(l.netH)}</td><td class="money">${M(l.vatH)}</td></tr>`).join('');
+  openModal(`فاتورة مشتريات ${p.no}`, `<div class="form-grid three pu-head">
+      <div><span class="cell-sub">المورد</span><b>${esc(p.supplier)}</b></div><div><span class="cell-sub">التاريخ</span><b>${fmtDate(p.date)}</b></div><div><span class="cell-sub">السداد</span><b>${esc(PAY_LABEL[p.payAccountId] || '—')}</b></div>
+      ${p.ref ? `<div><span class="cell-sub">رقم فاتورة المورد</span><b dir="ltr">${esc(p.ref)}</b></div>` : ''}${p.supplierVat ? `<div><span class="cell-sub">الرقم الضريبي</span><b dir="ltr">${esc(p.supplierVat)}</b></div>` : ''}
+      <div><span class="cell-sub">الأسعار</span><b>${esc(VAT_MODE_LABEL[p.vatMode] || 'قبل الضريبة')}</b></div></div>
+    <div class="table-wrap bordered"><table><thead><tr><th>الصنف</th><th class="hide-sm">التصنيف</th><th class="money">الكمية</th><th class="money">السعر</th><th class="money">قبل الضريبة</th><th class="money">الضريبة</th></tr></thead><tbody>${rows}
+      <tr class="total-row"><td colspan="4">الإجمالي ${M(p.totalH)} ر.س</td><td class="money">${M(p.netH)}</td><td class="money">${M(p.vatH)}</td></tr></tbody></table></div>`,
+  `<button type="button" class="btn btn-ghost" data-action="close-modal">إغلاق</button>${j ? `<button type="button" class="btn btn-ghost" data-action="view-journal" data-id="${esc(j.id)}">${icon('book')}القيد ${esc(j.no)}</button>` : ''}`, { wide: true });
 }
 
 /* ---------- الأصل الثابت والإهلاك ---------- */
@@ -2028,7 +2177,8 @@ const ACTIONS = {
   'reverse-journal': (el) => reasonModal('عكس قيد مرحّل', 'سبب العكس', (r, b) => run(b, () => Services.reverseJournal(el.dataset.id, r), ['عُكس القيد', 'رُحّل قيد عكسي'])),
   ledger: (el) => ledgerModal(el.dataset.id), 'new-account': () => accountModal(),
   'new-item': () => itemModal(), 'edit-item': (el) => itemModal(el.dataset.id), 'new-purchase': () => purchaseModal(),
-  'add-pline': () => { if (pdraft.lines.length >= 30) return; pdraft.lines.push({ itemId: '', qty: '', cost: '' }); drawPLines(); },
+  'add-pline': () => { if (pdraft.lines.length >= 40) return; pdraft.lines.push(newPLine()); drawPLines(); document.querySelector(`[data-pl="${pdraft.lines.length - 1}"][data-key="name"]`)?.focus(); },
+  'view-purchase': (el) => viewPurchase(el.dataset.id),
   'remove-pline': (el) => { pdraft.lines.splice(Number(el.dataset.k), 1); drawPLines(); },
   'new-asset': () => assetModal(), 'run-dep': () => depModal(),
   'confirm-dep': (el) => run(el, () => Services.runDepreciation(el.dataset.month), ['رُحّل قيد الإهلاك', (h) => `${H.fmtMoney(h)} ر.س`]),
@@ -2072,7 +2222,7 @@ document.addEventListener('input', (e) => {
     }
     drawJBalance(); return;
   }
-  if (t.dataset.pl !== undefined && pdraft) { pdraft.lines[Number(t.dataset.pl)][t.dataset.key] = t.value; drawPTotals(); }
+  if (t.dataset.pl !== undefined && pdraft) { const k = Number(t.dataset.pl); pdraft.lines[k][t.dataset.key] = t.value; if (t.dataset.key === 'name') autofillPLine(k, t); drawPTotals(); }
 });
 document.addEventListener('change', (e) => {
   const t = e.target;

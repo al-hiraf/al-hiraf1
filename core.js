@@ -109,6 +109,21 @@
 
   const lineNet = (qtyM, priceH) => mulDivRound(qtyM, priceH, QTY);
   const vatOf = (netH, bp = VAT_BP) => mulDivRound(netH, bp, 10000);
+  /** فصل مبلغ شامل للضريبة: الصافي = الإجمالي × 100 ÷ 115 مقرّباً، والضريبة = الباقي (فيتطابق المجموع دائماً) */
+  function splitGross(grossH, bp = VAT_BP) {
+    const netH = mulDivRound(grossH, 10000, 10000 + bp);
+    return { netH, vatH: grossH - netH };
+  }
+  /**
+   * بند فاتورة مشتريات (مصروف): الكمية × السعر حسب طريقة الضريبة
+   *  'excl' السعر قبل الضريبة (+15%) ، 'incl' السعر شامل الضريبة ، 'none' غير خاضع
+   */
+  function purchaseLine(qtyM, priceH, mode) {
+    const amountH = lineNet(qtyM, priceH);
+    if (mode === 'incl') return splitGross(amountH);
+    if (mode === 'none') return { netH: amountH, vatH: 0 };
+    return { netH: amountH, vatH: vatOf(amountH) };
+  }
 
   function sumInts(list) {
     let s = 0;
@@ -260,7 +275,7 @@
     const sales = invoices.filter((i) => (i.status === 'issued' || i.status === 'void') && inRange(i.issueDate));
     // الفاتورة الملغاة بعد إصدارها تُدرج ثم تُطرح في تاريخ الإلغاء
     const voids = invoices.filter((i) => i.status === 'void' && i.voidedDate && inRange(i.voidedDate));
-    const buys = purchases.filter((p) => inRange(p.date));
+    const buys = purchases.filter((p) => inRange(p.date) && (p.vatH || 0) > 0); // المشتريات غير الخاضعة لا تدخل الإقرار
     const outputNetH = sumInts(sales.map((i) => i.netH)) - sumInts(voids.map((i) => i.netH));
     const outputVatH = sumInts(sales.map((i) => i.vatH)) - sumInts(voids.map((i) => i.vatH));
     const inputNetH = sumInts(buys.map((p) => p.netH));
@@ -419,7 +434,7 @@
   return {
     MAX_H, VAT_BP, QTY, InputError,
     normalizeDigits, parseMoney, parseQty, parseInteger, parseDate, isISODate, isMonth, cleanText,
-    mulDivRound, lineNet, vatOf, sumInts,
+    mulDivRound, lineNet, vatOf, splitGross, purchaseLine, sumInts,
     fmtMoney, plainMoney, fmtQty, moneyInput, qtyInput,
     invoiceTotals, validateJournal, reverseLines,
     accountTotals, naturalBalance, trialBalance, incomeStatement, balanceSheet, vatReport,
