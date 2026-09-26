@@ -1152,7 +1152,7 @@ const Services = {
       const name = H.cleanText(cur.name, 120);
       const meta = audit(t, 'create', 'customer', cid, `إضافة العميل ${name} من طلب عرض سعر`);
       t.set('customers', cid, { name, company: '', vatNo: '', phone: H.normalizeDigits(cur.phone || ''), email: '', city: H.cleanText(cur.city, 60),
-        notes: H.cleanText([cur.service, cur.message].filter(Boolean).join(' — '), 500), archived: false, createdBy: S.user.username, createdAt: nowISO(), ...meta });
+        notes: H.cleanText([cur.workType, cur.message].filter(Boolean).join(' — '), 500), archived: false, createdBy: S.user.username, createdAt: nowISO(), ...meta });
       t.update('leads', id, { status: 'won', customerId: cid, handledBy: S.user.username, handledAt: nowISO(), ...meta });
       return name;
     });
@@ -1460,7 +1460,7 @@ const LIVE_NOTES = {
   assets: (d) => `سجّل الأصل ${d.name || ''}`,
 };
 function onRemoteChange(coll, type, doc) {
-  if (type === 'added' && coll === 'leads' && doc.status === 'new') { toast('طلب عرض سعر جديد', `${doc.name || ''} — ${doc.service || 'من الصفحة التعريفية'}`); return; }
+  if (type === 'added' && coll === 'leads' && doc.status === 'new') { toast('طلب عرض سعر جديد', `${doc.name || ''} — ${doc.workType || 'من الصفحة التعريفية'}`); return; }
   if (type !== 'added' || !LIVE_NOTES[coll] || !doc.createdBy || doc.createdBy === S.user?.username) return;
   const text = LIVE_NOTES[coll](doc);
   if (text) toast(userName(doc.createdBy), text);
@@ -2397,7 +2397,7 @@ function renderLeads() {
     <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>الاسم</th><th>الجوال</th><th class="hide-sm">نوع العمل</th><th class="hide-sm">التفاصيل</th><th>الحالة</th><th><span class="sr">إجراءات</span></th></tr></thead><tbody>
     ${list.map((l) => `<tr class="${l.status === 'new' ? 'row-warn' : ''}"><td class="nowrap">${l.at ? fmtDateTime(l.at) : '—'}</td><td><div class="cell-main">${esc(l.name)}</div>${l.city ? `<div class="cell-sub">${esc(l.city)}</div>` : ''}</td>
       <td><a class="num link" href="tel:${esc(l.phone)}">${esc(l.phone)}</a> <a class="btn btn-quiet btn-sm" href="https://wa.me/${esc(String(l.phone).replace(/^0/, '966').replace(/^\+/, ''))}" target="_blank" rel="noopener" title="واتساب">${icon('send')}</a></td>
-      <td class="hide-sm">${esc(l.service || '—')}</td><td class="hide-sm clamp">${esc(l.message || '')}${l.note ? `<div class="cell-sub">ملاحظة: ${esc(l.note)}</div>` : ''}</td><td>${pill(LEAD_STATUS, l.status)}</td>
+      <td class="hide-sm">${esc(l.workType || '—')}</td><td class="hide-sm clamp">${esc(l.message || '')}${l.note ? `<div class="cell-sub">ملاحظة: ${esc(l.note)}</div>` : ''}</td><td>${pill(LEAD_STATUS, l.status)}</td>
       <td><div class="row-actions">${l.status === 'new' ? btn('lead-status', 'تم التواصل', { cls: 'btn-quiet btn-sm', ic: 'check', data: { id: l.id, st: 'contacted' }, perm: 'customer.write' }) : ''}
         ${!l.customerId && l.status !== 'lost' ? btn('lead-convert', 'تحويل لعميل', { cls: 'btn-quiet btn-sm', ic: 'users', data: { id: l.id }, perm: 'customer.write' }) : ''}
         ${['new', 'contacted'].includes(l.status) ? btn('lead-status', 'لم يكتمل', { cls: 'btn-quiet btn-sm', ic: 'x', data: { id: l.id, st: 'lost' }, perm: 'customer.write' }) : ''}</div></td></tr>`).join('')}

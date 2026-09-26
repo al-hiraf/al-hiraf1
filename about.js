@@ -165,7 +165,7 @@
       if (Date.now() - last < 120000) { say('أرسلت طلباً قبل قليل؛ سنتواصل معك قريباً.', true); return; }
       const btn = $('qBtn'); btn.disabled = true;
       try {
-        await fs.addDoc(fs.collection(db, 'leads'), { name: nm, phone: ph, city: $('qCity').value.trim().slice(0, 40), service: sel.value.slice(0, 80),
+        await fs.addDoc(fs.collection(db, 'leads'), { name: nm, phone: ph, city: $('qCity').value.trim().slice(0, 40), workType: sel.value.slice(0, 80),
           message: $('qMsg').value.trim().slice(0, 800), status: 'new', at: fs.serverTimestamp() });
         try { localStorage.setItem('hiraf.q', String(Date.now())); } catch { /* لا شيء */ }
         form.reset(); say('وصلنا طلبك، وسيتواصل معك فريقنا قريباً. شكراً لك.', true);
